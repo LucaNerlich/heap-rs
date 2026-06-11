@@ -103,10 +103,11 @@ fn run() -> Result<(), String> {
     }
 
     let t2 = Instant::now();
-    println!("Computing dominators and retained sizes …");
-    let analysis = retained::compute_retained(&graph);
+    let analysis = retained::compute_retained(&graph, args.quiet);
     let retained_time = t2.elapsed();
-    println!("  ({retained_time:.1?})");
+    if args.quiet {
+        println!("Retained analysis ({retained_time:.1?})");
+    }
 
     report::print_summary(&analysis, &graph);
     report::print_class_table(&analysis.class_rows, args.top);

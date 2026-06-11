@@ -1,5 +1,5 @@
 use crate::index::HeapIndex;
-use crate::progress::{format_count, PhaseProgress};
+use crate::progress::{format_count, ProgressGroup};
 use jvm_hprof::heap_dump::SubRecord;
 use jvm_hprof::{Hprof, RecordTag};
 use rayon::prelude::*;
@@ -22,22 +22,14 @@ impl ObjectGraph {
     pub fn build(hprof: &Hprof<'_>, index: &HeapIndex, quiet: bool) -> Result<Self, String> {
         let n = index.objects.len();
         let started = Instant::now();
+        let group = ProgressGroup::new("Building object graph", 5, quiet);
 
-        let mut progress = if quiet {
-            PhaseProgress::quiet()
-        } else {
-            PhaseProgress::new("Building object graph: sorting addresses")
-        };
-
+        let progress = group.begin(1, "sorting addresses");
         let mut addrs: Vec<u64> = index.objects.iter().map(|o| o.addr).collect();
         addrs.par_sort_unstable();
+        progress.finish(format!("Sorted {} object addresses", format_count(n as u64)));
 
-        if !quiet {
-            progress.finish(format!("Sorted {} object addresses", format_count(n as u64)));
-            progress = PhaseProgress::new("Building object graph: counting edges");
-        }
-        let count_started = Instant::now();
-
+        let mut progress = group.begin(2, "building address index");
         let addr_to_id: FxHashMap<u64, u32> = addrs
             .iter()
             .enumerate()
@@ -60,6 +52,7 @@ impl ObjectGraph {
                     idx
                 });
             object_class[id] = class_idx;
+            progress.add_nodes(1);
         }
 
         let mut roots: Vec<u32> = index
@@ -69,7 +62,15 @@ impl ObjectGraph {
             .collect();
         roots.sort_unstable();
         roots.dedup();
+        progress.finish(format!(
+            "{} objects, {} classes, {} roots mapped",
+            format_count(n as u64),
+            format_count(class_names.len() as u64),
+            format_count(roots.len() as u64)
+        ));
 
+        let mut progress = group.begin(3, "counting edges");
+        let count_started = Instant::now();
         let mut offsets = vec![0u32; n + 1];
 
         for record in hprof.records_iter() {
@@ -108,22 +109,24 @@ impl ObjectGraph {
             }
         }
 
-        if !quiet {
-            progress.finish(format!(
-                "Counted {} edges in {:.1?}",
-                format_count(offsets[n] as u64),
-                count_started.elapsed()
-            ));
-            progress = PhaseProgress::new("Building object graph: writing edges");
-        }
+        progress.finish(format!(
+            "Counted {} edges in {:.1?}",
+            format_count(offsets[n] as u64),
+            count_started.elapsed()
+        ));
 
+        let progress = group.begin(4, "allocating edge buffer");
         for i in 0..n {
             offsets[i + 1] += offsets[i];
         }
-
         let mut targets = vec![0u32; offsets[n] as usize];
         let mut write_pos = offsets.clone();
+        progress.finish(format!(
+            "Allocated buffer for {} edges",
+            format_count(offsets[n] as u64)
+        ));
 
+        let mut progress = group.begin(5, "writing edges");
         for record in hprof.records_iter() {
             let record = record.map_err(|e| format!("{e:?}"))?;
             if !matches!(record.tag(), RecordTag::HeapDump | RecordTag::HeapDumpSegment) {

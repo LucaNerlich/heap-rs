@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 const UPDATE_INTERVAL: Duration = Duration::from_secs(2);
 const UPDATE_EVERY: u64 = 5_000_000;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Counters {
     pub sub_records: u64,
     pub segments: u64,
@@ -12,32 +12,63 @@ pub struct Counters {
     pub classes: u64,
     pub roots: u64,
     pub edges: u64,
+    pub nodes: u64,
+}
+
+pub struct ProgressGroup {
+    phase: String,
+    total_steps: u32,
+    quiet: bool,
+}
+
+impl ProgressGroup {
+    pub fn new(phase: impl Into<String>, total_steps: u32, quiet: bool) -> Self {
+        Self {
+            phase: phase.into(),
+            total_steps,
+            quiet,
+        }
+    }
+
+    pub fn begin(&self, step: u32, name: impl Into<String>) -> PhaseProgress {
+        PhaseProgress::subtask(
+            self.phase.clone(),
+            step,
+            self.total_steps,
+            name,
+            self.quiet,
+        )
+    }
 }
 
 pub struct PhaseProgress {
     bar: ProgressBar,
-    phase: String,
+    group_phase: String,
+    step: u32,
+    total_steps: u32,
+    subtask: String,
     started: Instant,
     last_update: Instant,
-    pub counters: Counters,
+    counters: Counters,
     quiet: bool,
 }
 
 impl PhaseProgress {
-    pub fn new(phase: impl Into<String>) -> Self {
-        Self::new_inner(phase, false)
-    }
-
-    pub fn quiet() -> Self {
-        Self::new_inner("", true)
-    }
-
-    fn new_inner(phase: impl Into<String>, quiet: bool) -> Self {
-        let phase = phase.into();
+    fn subtask(
+        group_phase: String,
+        step: u32,
+        total_steps: u32,
+        name: impl Into<String>,
+        quiet: bool,
+    ) -> Self {
+        let subtask = name.into();
         if quiet {
             return Self {
                 bar: ProgressBar::hidden(),
-                phase,
+                group_phase,
+                step,
+                total_steps,
+                subtask,
                 started: Instant::now(),
                 last_update: Instant::now(),
                 counters: Counters::default(),
@@ -54,16 +85,20 @@ impl PhaseProgress {
                 ]),
         );
         bar.enable_steady_tick(Duration::from_millis(100));
-        bar.set_message(format!("{} …", phase));
 
-        Self {
+        let progress = Self {
             bar,
-            phase,
+            group_phase,
+            step,
+            total_steps,
+            subtask,
             started: Instant::now(),
             last_update: Instant::now(),
             counters: Counters::default(),
             quiet: false,
-        }
+        };
+        progress.refresh();
+        progress
     }
 
     pub fn tick_sub_record(&mut self) {
@@ -93,6 +128,11 @@ impl PhaseProgress {
         self.maybe_refresh();
     }
 
+    pub fn add_nodes(&mut self, n: u64) {
+        self.counters.nodes += n;
+        self.maybe_refresh();
+    }
+
     fn maybe_refresh(&mut self) {
         if self.quiet {
             return;
@@ -107,18 +147,34 @@ impl PhaseProgress {
     }
 
     fn refresh(&self) {
+        self.bar.set_message(self.format_line(None));
+    }
+
+    fn format_line(&self, summary: Option<&str>) -> String {
+        if let Some(summary) = summary {
+            return summary.to_string();
+        }
+
         let c = &self.counters;
         let elapsed = self.started.elapsed();
         let secs = elapsed.as_secs_f64().max(0.001);
-        let sub_rate = c.sub_records as f64 / secs;
 
-        let mut parts = vec![self.phase.clone()];
+        let mut parts = Vec::new();
+        if !self.group_phase.is_empty() && self.total_steps > 1 {
+            parts.push(format!(
+                "{} [{}/{}] {}",
+                self.group_phase, self.step, self.total_steps, self.subtask
+            ));
+        } else if !self.subtask.is_empty() {
+            parts.push(self.subtask.clone());
+        }
+
         if c.segments > 0 {
             parts.push(format!("{} segs", format_count(c.segments)));
         }
         if c.sub_records > 0 {
             parts.push(format!("{} subs", format_count(c.sub_records)));
-            parts.push(format!("{:.0}/s", sub_rate));
+            parts.push(format!("{:.0}/s", c.sub_records as f64 / secs));
         }
         if c.objects > 0 {
             parts.push(format!("{} objs", format_count(c.objects)));
@@ -131,17 +187,32 @@ impl PhaseProgress {
         }
         if c.edges > 0 {
             parts.push(format!("{} edges", format_count(c.edges)));
+            parts.push(format!("{:.0}/s", c.edges as f64 / secs));
+        }
+        if c.nodes > 0 {
+            parts.push(format!("{} nodes", format_count(c.nodes)));
         }
         parts.push(format!("{elapsed:.1?}"));
 
-        self.bar.set_message(parts.join(" | "));
+        parts.join(" | ")
     }
 
     pub fn finish(&self, summary: impl Into<String>) {
         if self.quiet {
             return;
         }
-        self.bar.finish_with_message(summary.into());
+        let summary = summary.into();
+        let line = if summary.is_empty() {
+            self.format_line(None)
+        } else if self.total_steps > 1 {
+            format!(
+                "{} [{}/{}] {} — {}",
+                self.group_phase, self.step, self.total_steps, self.subtask, summary
+            )
+        } else {
+            format!("{} — {}", self.subtask, summary)
+        };
+        self.bar.finish_with_message(line);
     }
 }
 

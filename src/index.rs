@@ -1,4 +1,4 @@
-use crate::progress::PhaseProgress;
+use crate::progress::ProgressGroup;
 use jvm_hprof::heap_dump::{FieldType, FieldValue, Instance, PrimitiveArrayType, SubRecord};
 use jvm_hprof::{Hprof, IdSize, RecordTag};
 use rustc_hash::FxHashMap;
@@ -24,11 +24,7 @@ pub struct HeapIndex {
 impl HeapIndex {
     pub fn build(hprof: &Hprof<'_>, quiet: bool) -> Result<Self, String> {
         let id_size = hprof.header().id_size();
-        let mut progress = if quiet {
-            PhaseProgress::quiet()
-        } else {
-            PhaseProgress::new("Pass 1: indexing heap")
-        };
+        let group = ProgressGroup::new("Pass 1: indexing heap", 3, quiet);
         let started = Instant::now();
         let mut utf8 = FxHashMap::default();
         let mut load_class_names = FxHashMap::default();
@@ -36,6 +32,9 @@ impl HeapIndex {
             FxHashMap::default();
         let mut objects = Vec::new();
         let mut roots = Vec::new();
+
+        let mut progress = group.begin(1, "loading symbols");
+        let mut in_heap = false;
 
         for record in hprof.records_iter() {
             let record = record.map_err(|e| format!("{e:?}"))?;
@@ -52,6 +51,7 @@ impl HeapIndex {
                             .map(|s| s.to_string())
                             .unwrap_or_else(|_| String::from_utf8_lossy(parsed.text()).into_owned()),
                     );
+                    progress.add_nodes(1);
                 }
                 RecordTag::LoadClass => {
                     let lc = record
@@ -61,8 +61,18 @@ impl HeapIndex {
                     if let Some(name) = utf8.get(&lc.class_name_id().id()) {
                         load_class_names.insert(lc.class_obj_id().id(), name.clone());
                     }
+                    progress.add_nodes(1);
                 }
                 RecordTag::HeapDump | RecordTag::HeapDumpSegment => {
+                    if !in_heap {
+                        progress.finish(format!(
+                            "{} strings, {} classes loaded",
+                            utf8.len(),
+                            load_class_names.len()
+                        ));
+                        progress = group.begin(2, "scanning heap");
+                        in_heap = true;
+                    }
                     progress.tick_segment();
                     let seg = record
                         .as_heap_dump_segment()
@@ -177,10 +187,27 @@ impl HeapIndex {
             }
         }
 
+        if in_heap {
+            progress.finish(format!(
+                "{} objects, {} class dumps, {} roots",
+                objects.len(),
+                raw_classes.len(),
+                roots.len()
+            ));
+        } else {
+            progress.finish(format!(
+                "{} strings, {} classes loaded",
+                utf8.len(),
+                load_class_names.len()
+            ));
+        }
+
+        let mut progress = group.begin(3, "finalizing class layouts");
         let mut classes = FxHashMap::default();
         for &class_id in raw_classes.keys() {
             let layout = build_class_layout(class_id, &raw_classes, &load_class_names);
             classes.insert(class_id, layout);
+            progress.add_nodes(1);
         }
 
         roots.sort_unstable();

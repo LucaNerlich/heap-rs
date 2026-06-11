@@ -1,5 +1,6 @@
 use crate::dominators::compute_dominators;
 use crate::graph::ObjectGraph;
+use crate::progress::ProgressGroup;
 use rayon::prelude::*;
 
 pub struct ClassRetainedRow {
@@ -25,11 +26,16 @@ pub struct RetainedAnalysis {
     pub unreachable_objects: u64,
 }
 
-pub fn compute_retained(graph: &ObjectGraph) -> RetainedAnalysis {
+pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
+    let group = ProgressGroup::new("Computing retained sizes", 3, quiet);
+
+    let progress = group.begin(1, "dominator tree");
     let n = graph.num_nodes;
     let super_root = graph.super_root as usize;
     let idom = compute_dominators(graph);
+    progress.finish(format!("Dominator tree for {} nodes", n));
 
+    let mut progress = group.begin(2, "accumulating retained sizes");
     let mut dom_children: Vec<Vec<u32>> = vec![Vec::new(); n + 1];
     for v in 0..n {
         let d = idom[v] as usize;
@@ -58,8 +64,14 @@ pub fn compute_retained(graph: &ObjectGraph) -> RetainedAnalysis {
         for &c in &dom_children[v] {
             retained[v] += retained[c as usize];
         }
+        progress.add_nodes(1);
     }
+    progress.finish(format!(
+        "Retained sizes for {} objects",
+        format_count(n as u64)
+    ));
 
+    let progress = group.begin(3, "aggregating by class");
     let k = graph.class_names.len();
     let mut class_count = vec![0u64; k];
     let mut class_shallow = vec![0u64; k];
@@ -118,6 +130,12 @@ pub fn compute_retained(graph: &ObjectGraph) -> RetainedAnalysis {
         0
     };
 
+    progress.finish(format!(
+        "{} classes, {} reachable objects",
+        format_count(k as u64),
+        format_count(reachable)
+    ));
+
     RetainedAnalysis {
         class_rows,
         top_objects: object_rows,
@@ -126,4 +144,8 @@ pub fn compute_retained(graph: &ObjectGraph) -> RetainedAnalysis {
         reachable_objects: reachable,
         unreachable_objects: unreachable,
     }
+}
+
+fn format_count(n: u64) -> String {
+    crate::progress::format_count(n)
 }
