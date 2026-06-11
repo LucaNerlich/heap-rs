@@ -101,6 +101,8 @@ heap-rs [OPTIONS]
 |--------|-------------|
 | `-f`, `--file <PATH>` | Path to the `.hprof` file (default: `qa.hprof`) |
 | `-n`, `--top <N>` | Number of rows to print in each terminal table (default: `30`) |
+| `--class <NAME>` | Filter the object table to one class (e.g. `byte[]`, `java.util.HashMap`) |
+| `--explain-class <NAME>` | Show who references instances of a class (incoming refs + largest instances) |
 | `--csv <PATH>` | Write a per-class CSV report |
 | `--csv-objects <PATH>` | Write a per-object CSV report (full mode only) |
 | `--shallow-only` | Skip dominator computation; output shallow histogram only |
@@ -129,6 +131,18 @@ cargo run --release -- --file heap.hprof --csv classes.csv --csv-objects top-obj
 cargo run --release -- --file heap.hprof --shallow-only --top 20
 ```
 
+**Investigate why a class uses memory** (e.g. who holds all the `byte[]` arrays):
+
+```bash
+cargo run --release -- --file heap.hprof --explain-class 'byte[]' --top 50 --quiet
+```
+
+**Filter the object table to one class:**
+
+```bash
+cargo run --release -- --file heap.hprof --class 'byte[]' --top 50
+```
+
 ## Output
 
 ### Terminal
@@ -138,11 +152,14 @@ The tool prints phase timings, then:
 1. **Shallow histogram** — instance count and shallow bytes per class (always shown).
 2. **Heap summary** — object count, GC roots, reachable vs unreachable objects, total shallow size (full mode).
 3. **Top classes by retained size** — instance count, shallow bytes, retained bytes (full mode).
-4. **Top objects by retained size** — address, class, shallow and retained bytes (full mode).
+4. **Top objects by retained size** — address, class, shallow and retained bytes (full mode). Use `--class` to restrict this table to one class.
+5. **Class explanation** (`--explain-class`) — largest instances of the class and the classes that directly reference them (full mode).
 
 **Shallow size** = memory stored in the object itself (fields, array payload, headers).
 
 **Retained size** = memory that would become unreachable if this object were removed (includes everything dominated by it in the heap). This is the most useful metric for finding what is actually holding memory.
+
+For **leaf types** such as `byte[]`, `int[]`, or `String`, retained size per instance is usually equal to shallow size — the array or string does not own other heap objects. The class table then tells you *how much* raw payload exists, not *why*. Use `--explain-class` to see which container types (maps, caches, framework objects) point at those instances, and check parent classes in the retained table for the dominator tree view.
 
 ### CSV
 
@@ -163,6 +180,15 @@ The tool prints phase timings, then:
 | `class` | Class name |
 | `shallow_bytes` | Shallow size of this object |
 | `retained_bytes` | Retained size of this object |
+
+### `--explain-class` output
+
+When you pass `--explain-class <NAME>`, the tool prints two extra tables:
+
+1. **Largest instances** — address, shallow size, and a representative referrer (class + address of an object that points at this instance).
+2. **Top retainer classes** — how many instances of the target class each referrer type holds, and the summed shallow bytes of those instances.
+
+Class names match the same rules as `--class`: exact name, suffix after `/`, or array types like `byte[]`.
 
 ## How it works
 
@@ -193,11 +219,14 @@ Full retained analysis on multi-gigabyte production dumps can take tens of minut
 ```
 src/
   main.rs        CLI entry point
+  lib.rs         Library API (used by tests and the binary)
   index.rs       Pass 1: parse heap, build class layouts and object list
   graph.rs       Object graph (CSR edges) and shallow histogram
   dominators.rs  Lengauer–Tarjan dominator computation
-  retained.rs    Retained-size aggregation
+  retained.rs    Retained-size aggregation and class explanation
   report.rs      Terminal tables and CSV export
+  testutil/      Synthetic HPROF fixtures for tests
+tests/           Integration and CLI tests
 ```
 
 ## License
