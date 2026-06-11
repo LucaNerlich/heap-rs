@@ -104,6 +104,7 @@ heap-rs [OPTIONS]
 | `--csv <PATH>` | Write a per-class CSV report |
 | `--csv-objects <PATH>` | Write a per-object CSV report (full mode only) |
 | `--shallow-only` | Skip dominator computation; output shallow histogram only |
+| `--quiet` | Disable live progress spinners (plain log output for CI) |
 
 ### Examples
 
@@ -172,6 +173,8 @@ The tool prints phase timings, then:
 5. **Retained sizes** — accumulated up the dominator tree and aggregated by class.
 
 Use `--shallow-only` to stop after step 3 and get a fast sanity check that parsing is correct.
+
+During indexing and graph building, a live spinner reports throughput (sub-records/s), object/class/root counts, and elapsed time. Use `--quiet` to disable spinners and emit one summary line per phase instead.
 
 ## Memory
 

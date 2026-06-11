@@ -1,6 +1,7 @@
 mod dominators;
 mod graph;
 mod index;
+mod progress;
 mod report;
 mod retained;
 
@@ -33,6 +34,10 @@ struct Args {
     /// Skip dominator computation (shallow histogram only)
     #[arg(long)]
     shallow_only: bool,
+
+    /// Disable progress spinners (for CI/log files)
+    #[arg(long)]
+    quiet: bool,
 }
 
 fn main() {
@@ -58,21 +63,23 @@ fn run() -> Result<(), String> {
     );
 
     let t0 = Instant::now();
-    println!("Pass 1: indexing heap …");
-    let index = index::HeapIndex::build(&hprof)?;
+    let index = index::HeapIndex::build(&hprof, args.quiet)?;
     let pass1 = t0.elapsed();
-    println!(
-        "  {} objects, {} classes, {} roots ({pass1:.1?})",
-        index.objects.len(),
-        index.classes.len(),
-        index.roots.len()
-    );
+    if args.quiet {
+        println!(
+            "Pass 1: {} objects, {} classes, {} roots ({pass1:.1?})",
+            index.objects.len(),
+            index.classes.len(),
+            index.roots.len()
+        );
+    }
 
     let t1 = Instant::now();
-    println!("Building object graph …");
-    let graph = graph::ObjectGraph::build(&hprof, &index)?;
+    let graph = graph::ObjectGraph::build(&hprof, &index, args.quiet)?;
     let graph_time = t1.elapsed();
-    println!("  {} edges ({graph_time:.1?})", graph.targets.len());
+    if args.quiet {
+        println!("Object graph: {} edges ({graph_time:.1?})", graph.targets.len());
+    }
 
     report::print_shallow_histogram(&graph, args.top);
 

@@ -1,8 +1,10 @@
 use crate::index::HeapIndex;
+use crate::progress::{format_count, PhaseProgress};
 use jvm_hprof::heap_dump::SubRecord;
 use jvm_hprof::{Hprof, RecordTag};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+use std::time::Instant;
 
 pub struct ObjectGraph {
     pub addrs: Vec<u64>,
@@ -17,10 +19,24 @@ pub struct ObjectGraph {
 }
 
 impl ObjectGraph {
-    pub fn build(hprof: &Hprof<'_>, index: &HeapIndex) -> Result<Self, String> {
+    pub fn build(hprof: &Hprof<'_>, index: &HeapIndex, quiet: bool) -> Result<Self, String> {
         let n = index.objects.len();
+        let started = Instant::now();
+
+        let mut progress = if quiet {
+            PhaseProgress::quiet()
+        } else {
+            PhaseProgress::new("Building object graph: sorting addresses")
+        };
+
         let mut addrs: Vec<u64> = index.objects.iter().map(|o| o.addr).collect();
         addrs.par_sort_unstable();
+
+        if !quiet {
+            progress.finish(format!("Sorted {} object addresses", format_count(n as u64)));
+            progress = PhaseProgress::new("Building object graph: counting edges");
+        }
+        let count_started = Instant::now();
 
         let addr_to_id: FxHashMap<u64, u32> = addrs
             .iter()
@@ -61,12 +77,14 @@ impl ObjectGraph {
             if !matches!(record.tag(), RecordTag::HeapDump | RecordTag::HeapDumpSegment) {
                 continue;
             }
+            progress.tick_segment();
             let seg = record
                 .as_heap_dump_segment()
                 .ok_or_else(|| "expected heap dump".to_string())?
                 .map_err(|e| format!("{e:?}"))?;
             for sub in seg.sub_records() {
                 let sub = sub.map_err(|e| format!("{e:?}"))?;
+                progress.tick_sub_record();
                 let (from_id, refs) = match &sub {
                     SubRecord::Instance(inst) => {
                         (inst.obj_id().id(), index.extract_refs(&sub)?)
@@ -79,12 +97,24 @@ impl ObjectGraph {
                 let Some(&from) = addr_to_id.get(&from_id) else {
                     continue;
                 };
+                let mut edge_batch = 0u64;
                 for addr in refs {
                     if addr_to_id.contains_key(&addr) {
                         offsets[from as usize + 1] += 1;
+                        edge_batch += 1;
                     }
                 }
+                progress.add_edges(edge_batch);
             }
+        }
+
+        if !quiet {
+            progress.finish(format!(
+                "Counted {} edges in {:.1?}",
+                format_count(offsets[n] as u64),
+                count_started.elapsed()
+            ));
+            progress = PhaseProgress::new("Building object graph: writing edges");
         }
 
         for i in 0..n {
@@ -99,12 +129,14 @@ impl ObjectGraph {
             if !matches!(record.tag(), RecordTag::HeapDump | RecordTag::HeapDumpSegment) {
                 continue;
             }
+            progress.tick_segment();
             let seg = record
                 .as_heap_dump_segment()
                 .ok_or_else(|| "expected heap dump".to_string())?
                 .map_err(|e| format!("{e:?}"))?;
             for sub in seg.sub_records() {
                 let sub = sub.map_err(|e| format!("{e:?}"))?;
+                progress.tick_sub_record();
                 let (from_id, refs) = match &sub {
                     SubRecord::Instance(inst) => {
                         (inst.obj_id().id(), index.extract_refs(&sub)?)
@@ -117,15 +149,25 @@ impl ObjectGraph {
                 let Some(&from) = addr_to_id.get(&from_id) else {
                     continue;
                 };
+                let mut edge_batch = 0u64;
                 for addr in refs {
                     if let Some(&target) = addr_to_id.get(&addr) {
                         let pos = write_pos[from as usize] as usize;
                         targets[pos] = target;
                         write_pos[from as usize] += 1;
+                        edge_batch += 1;
                     }
                 }
+                progress.add_edges(edge_batch);
             }
         }
+
+        progress.finish(format!(
+            "Object graph done: {} edges, {} objects in {:.1?}",
+            format_count(offsets[n] as u64),
+            format_count(n as u64),
+            started.elapsed()
+        ));
 
         Ok(ObjectGraph {
             addrs,

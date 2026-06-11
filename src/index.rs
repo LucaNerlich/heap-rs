@@ -1,6 +1,8 @@
+use crate::progress::PhaseProgress;
 use jvm_hprof::heap_dump::{FieldType, FieldValue, Instance, PrimitiveArrayType, SubRecord};
 use jvm_hprof::{Hprof, IdSize, RecordTag};
 use rustc_hash::FxHashMap;
+use std::time::Instant;
 
 pub struct ClassLayout {
     pub fields: Vec<FieldType>,
@@ -20,8 +22,14 @@ pub struct HeapIndex {
 }
 
 impl HeapIndex {
-    pub fn build(hprof: &Hprof<'_>) -> Result<Self, String> {
+    pub fn build(hprof: &Hprof<'_>, quiet: bool) -> Result<Self, String> {
         let id_size = hprof.header().id_size();
+        let mut progress = if quiet {
+            PhaseProgress::quiet()
+        } else {
+            PhaseProgress::new("Pass 1: indexing heap")
+        };
+        let started = Instant::now();
         let mut utf8 = FxHashMap::default();
         let mut load_class_names = FxHashMap::default();
         let mut raw_classes: FxHashMap<u64, (Option<u64>, u32, Vec<FieldType>)> =
@@ -55,14 +63,17 @@ impl HeapIndex {
                     }
                 }
                 RecordTag::HeapDump | RecordTag::HeapDumpSegment => {
+                    progress.tick_segment();
                     let seg = record
                         .as_heap_dump_segment()
                         .ok_or_else(|| "expected heap dump".to_string())?
                         .map_err(|e| format!("{e:?}"))?;
                     for sub in seg.sub_records() {
                         let sub = sub.map_err(|e| format!("{e:?}"))?;
+                        progress.tick_sub_record();
                         match sub {
                             SubRecord::Class(c) => {
+                                progress.add_class();
                                 let mut fields = Vec::new();
                                 for fd in c.instance_field_descriptors() {
                                     fields.push(
@@ -80,6 +91,7 @@ impl HeapIndex {
                                 );
                             }
                             SubRecord::Instance(inst) => {
+                                progress.add_object();
                                 let class_id = inst.class_obj_id().id();
                                 let name = class_name(class_id, &load_class_names);
                                 let shallow = raw_classes
@@ -93,6 +105,7 @@ impl HeapIndex {
                                 });
                             }
                             SubRecord::ObjectArray(arr) => {
+                                progress.add_object();
                                 let name = array_class_name(
                                     arr.array_class_obj_id().id(),
                                     &load_class_names,
@@ -106,6 +119,7 @@ impl HeapIndex {
                                 });
                             }
                             SubRecord::PrimitiveArray(arr) => {
+                                progress.add_object();
                                 let ne = primitive_array_len(&arr);
                                 let shallow =
                                     array_shallow(ne, primitive_elem_size(arr.primitive_type()));
@@ -118,16 +132,41 @@ impl HeapIndex {
                                     ),
                                 });
                             }
-                            SubRecord::GcRootUnknown(r) => roots.push(r.obj_id().id()),
-                            SubRecord::GcRootJniGlobal(r) => roots.push(r.obj_id().id()),
-                            SubRecord::GcRootJniLocalRef(r) => roots.push(r.obj_id().id()),
-                            SubRecord::GcRootJavaStackFrame(r) => roots.push(r.obj_id().id()),
-                            SubRecord::GcRootNativeStack(r) => roots.push(r.obj_id().id()),
-                            SubRecord::GcRootSystemClass(r) => roots.push(r.obj_id().id()),
-                            SubRecord::GcRootThreadBlock(r) => roots.push(r.obj_id().id()),
-                            SubRecord::GcRootBusyMonitor(r) => roots.push(r.obj_id().id()),
+                            SubRecord::GcRootUnknown(r) => {
+                                progress.add_root();
+                                roots.push(r.obj_id().id());
+                            }
+                            SubRecord::GcRootJniGlobal(r) => {
+                                progress.add_root();
+                                roots.push(r.obj_id().id());
+                            }
+                            SubRecord::GcRootJniLocalRef(r) => {
+                                progress.add_root();
+                                roots.push(r.obj_id().id());
+                            }
+                            SubRecord::GcRootJavaStackFrame(r) => {
+                                progress.add_root();
+                                roots.push(r.obj_id().id());
+                            }
+                            SubRecord::GcRootNativeStack(r) => {
+                                progress.add_root();
+                                roots.push(r.obj_id().id());
+                            }
+                            SubRecord::GcRootSystemClass(r) => {
+                                progress.add_root();
+                                roots.push(r.obj_id().id());
+                            }
+                            SubRecord::GcRootThreadBlock(r) => {
+                                progress.add_root();
+                                roots.push(r.obj_id().id());
+                            }
+                            SubRecord::GcRootBusyMonitor(r) => {
+                                progress.add_root();
+                                roots.push(r.obj_id().id());
+                            }
                             SubRecord::GcRootThreadObj(r) => {
                                 if let Some(id) = r.thread_obj_id() {
+                                    progress.add_root();
                                     roots.push(id.id());
                                 }
                             }
@@ -146,6 +185,14 @@ impl HeapIndex {
 
         roots.sort_unstable();
         roots.dedup();
+
+        progress.finish(format!(
+            "Pass 1 done: {} objects, {} classes, {} roots in {:.1?}",
+            objects.len(),
+            classes.len(),
+            roots.len(),
+            started.elapsed()
+        ));
 
         Ok(HeapIndex {
             id_size,
