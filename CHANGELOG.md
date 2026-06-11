@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.2] - 2026-06-11
+
+### Changed
+
+- Upgraded to Rust 2024 edition (requires Rust 1.85+)
+- CI workflow pins Rust 1.85 for edition 2024 support
+
 ## [1.0.1] - 2026-06-11
 
 ### Added

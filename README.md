@@ -4,7 +4,7 @@ A fast CLI tool for analyzing Java `.hprof` heap dumps. It reports **per-class m
 
 ## Requirements
 
-- [Rust](https://rustup.rs/) 1.70 or newer (2021 edition)
+- [Rust](https://rustup.rs/) 1.85 or newer (2024 edition)
 - Enough RAM to hold the parsed object graph in memory (see [Memory](#memory) below)
 
 Supported dump format: **JAVA PROFILE 1.0.2** (standard HotSpot / OpenJDK output, including segmented `HEAP_DUMP_SEGMENT` records).
