@@ -149,3 +149,53 @@ pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
 fn format_count(n: u64) -> String {
     crate::progress::format_count(n)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::hprof::OwnedFixture;
+
+    #[test]
+    fn retained_per_object_reports_shallow_sizes() {
+        let fixture = OwnedFixture::linked_list();
+        let hprof = fixture.parse();
+        let index = crate::index::HeapIndex::build(&hprof, true).unwrap();
+        let graph = crate::graph::ObjectGraph::build(&hprof, &index, true).unwrap();
+        let analysis = compute_retained(&graph, true);
+
+        let by_addr: std::collections::HashMap<_, _> = analysis
+            .top_objects
+            .iter()
+            .map(|o| (o.addr, o.retained_bytes))
+            .collect();
+        assert_eq!(by_addr[&0x3002], 24);
+        assert_eq!(by_addr[&0x3001], 24);
+        assert_eq!(by_addr[&0x3000], 24);
+        assert_eq!(analysis.total_shallow, 72);
+    }
+
+    #[test]
+    fn class_rows_aggregate_instance_counts() {
+        let fixture = OwnedFixture::linked_list();
+        let hprof = fixture.parse();
+        let index = crate::index::HeapIndex::build(&hprof, true).unwrap();
+        let graph = crate::graph::ObjectGraph::build(&hprof, &index, true).unwrap();
+        let analysis = compute_retained(&graph, true);
+
+        assert_eq!(analysis.class_rows.len(), 1);
+        assert_eq!(analysis.class_rows[0].instance_count, 3);
+        assert_eq!(analysis.class_rows[0].shallow_bytes, 72);
+    }
+
+    #[test]
+    fn holder_fixture_object_count() {
+        let fixture = OwnedFixture::holder_and_array();
+        let hprof = fixture.parse();
+        let index = crate::index::HeapIndex::build(&hprof, true).unwrap();
+        let graph = crate::graph::ObjectGraph::build(&hprof, &index, true).unwrap();
+        let analysis = compute_retained(&graph, true);
+
+        assert_eq!(analysis.reachable_objects + analysis.unreachable_objects, 6);
+        assert_eq!(analysis.total_shallow, index.objects.iter().map(|o| o.shallow as u64).sum());
+    }
+}

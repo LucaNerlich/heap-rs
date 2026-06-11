@@ -359,3 +359,48 @@ fn instance_refs(
     }
     Ok(refs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::hprof::OwnedFixture;
+
+    #[test]
+    fn builds_class_layout_with_superclass_fields() {
+        let fixture = OwnedFixture::linked_list();
+        let hprof = fixture.parse();
+        let index = HeapIndex::build(&hprof, true).unwrap();
+        let node_layout = index.classes.get(&0x2001).expect("Node class");
+        assert_eq!(node_layout.fields.len(), 1);
+    }
+
+    #[test]
+    fn deduplicates_roots() {
+        let fixture = OwnedFixture::linked_list();
+        let hprof = fixture.parse();
+        let index = HeapIndex::build(&hprof, true).unwrap();
+        assert_eq!(index.roots, vec![0x3000]);
+    }
+
+    #[test]
+    fn extract_refs_from_linked_instance() {
+        let fixture = OwnedFixture::linked_list();
+        let hprof = fixture.parse();
+        let index = HeapIndex::build(&hprof, true).unwrap();
+        for record in hprof.records_iter().flatten() {
+            if let Some(seg) = record.as_heap_dump_segment() {
+                let seg = seg.unwrap();
+                for sub in seg.sub_records().flatten() {
+                    if let jvm_hprof::heap_dump::SubRecord::Instance(ref inst) = sub {
+                        if inst.obj_id().id() == 0x3000 {
+                            let refs = index.extract_refs(&sub).unwrap();
+                            assert_eq!(refs, vec![0x3001]);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        panic!("root instance not found");
+    }
+}

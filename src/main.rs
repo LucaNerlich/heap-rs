@@ -1,11 +1,5 @@
-mod dominators;
-mod graph;
-mod index;
-mod progress;
-mod report;
-mod retained;
-
 use clap::Parser;
+use heap_rs::{graph, index, report, retained};
 use jvm_hprof::parse_hprof;
 use memmap2::Mmap;
 use std::fs::File;

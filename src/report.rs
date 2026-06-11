@@ -134,3 +134,69 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{}…", &s[..max.saturating_sub(1)])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::retained::{ClassRetainedRow, ObjectRetainedRow};
+
+    #[test]
+    fn format_bytes_uses_binary_prefixes() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(2048), "2.00 KB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.00 MB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.00 GB");
+    }
+
+    #[test]
+    fn write_class_csv_has_header_and_rows() {
+        let rows = vec![
+            ClassRetainedRow {
+                class_name: "java/lang/String".into(),
+                instance_count: 10,
+                shallow_bytes: 320,
+                retained_bytes: 640,
+            },
+            ClassRetainedRow {
+                class_name: "com/example/Node".into(),
+                instance_count: 3,
+                shallow_bytes: 72,
+                retained_bytes: 72,
+            },
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("classes.csv");
+        write_class_csv(&path, &rows).unwrap();
+
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.starts_with("class,instances,shallow_bytes,retained_bytes\n"));
+        assert!(content.contains("java/lang/String,10,320,640"));
+    }
+
+    #[test]
+    fn write_object_csv_respects_limit() {
+        let rows: Vec<ObjectRetainedRow> = (0..5)
+            .map(|i| ObjectRetainedRow {
+                addr: 0x1000 + i,
+                class_name: "X".into(),
+                shallow_bytes: 16,
+                retained_bytes: 16 * (i + 1),
+            })
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("objects.csv");
+        write_object_csv(&path, &rows, Some(2)).unwrap();
+
+        let content = std::fs::read_to_string(path).unwrap();
+        let lines: Vec<_> = content.lines().collect();
+        assert_eq!(lines.len(), 3); // header + 2 rows
+    }
+
+    #[test]
+    fn truncate_long_class_names() {
+        let long = "a".repeat(80);
+        let truncated = truncate(&long, 60);
+        assert!(truncated.ends_with('…'));
+        assert!(truncated.chars().count() <= 60);
+    }
+}

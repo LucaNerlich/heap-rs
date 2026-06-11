@@ -204,3 +204,41 @@ impl ObjectGraph {
         rows
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::hprof::OwnedFixture;
+
+    #[test]
+    fn csr_offsets_match_edge_count() {
+        let fixture = OwnedFixture::linked_list();
+        let hprof = fixture.parse();
+        let index = crate::index::HeapIndex::build(&hprof, true).unwrap();
+        let graph = ObjectGraph::build(&hprof, &index, true).unwrap();
+        assert_eq!(graph.offsets[graph.num_nodes] as usize, graph.targets.len());
+    }
+
+    #[test]
+    fn sorted_addresses_are_monotonic() {
+        let fixture = OwnedFixture::linked_list();
+        let hprof = fixture.parse();
+        let index = crate::index::HeapIndex::build(&hprof, true).unwrap();
+        let graph = ObjectGraph::build(&hprof, &index, true).unwrap();
+        for window in graph.addrs.windows(2) {
+            assert!(window[0] <= window[1]);
+        }
+    }
+
+    #[test]
+    fn shallow_histogram_groups_by_class() {
+        let fixture = OwnedFixture::linked_list();
+        let hprof = fixture.parse();
+        let index = crate::index::HeapIndex::build(&hprof, true).unwrap();
+        let graph = ObjectGraph::build(&hprof, &index, true).unwrap();
+        let hist = graph.shallow_histogram();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].0, "com/example/Node");
+        assert_eq!(hist[0].1, 3);
+    }
+}

@@ -123,3 +123,41 @@ pub fn compute_dominators(graph: &ObjectGraph) -> Vec<u32> {
 
     idom
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::ObjectGraph;
+
+    #[test]
+    fn dominator_output_has_entry_for_every_node_plus_super_root() {
+        let graph = ObjectGraph {
+            addrs: vec![0xA, 0xB, 0xC],
+            shallow: vec![10, 20, 30],
+            class_names: vec!["Node".into()],
+            object_class: vec![0, 0, 0],
+            offsets: vec![0, 1, 2, 2],
+            targets: vec![1, 2],
+            roots: vec![0],
+            num_nodes: 3,
+            super_root: 3,
+        };
+        let idom = compute_dominators(&graph);
+        assert_eq!(idom.len(), 4);
+        assert_eq!(idom[3], 3);
+    }
+
+    #[test]
+    fn dominators_for_linked_list_fixture() {
+        use crate::testutil::hprof::OwnedFixture;
+
+        let fixture = OwnedFixture::linked_list();
+        let hprof = fixture.parse();
+        let index = crate::index::HeapIndex::build(&hprof, true).unwrap();
+        let graph = ObjectGraph::build(&hprof, &index, true).unwrap();
+        let idom = compute_dominators(&graph);
+
+        assert_eq!(idom.len(), graph.num_nodes + 1);
+        assert_eq!(idom[graph.super_root as usize], graph.super_root);
+    }
+}

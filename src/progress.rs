@@ -227,3 +227,40 @@ pub(crate) fn format_count(n: u64) -> String {
         n.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_count_scales_units() {
+        assert_eq!(format_count(42), "42");
+        assert_eq!(format_count(1_500), "1.50K");
+        assert_eq!(format_count(2_500_000), "2.50M");
+        assert_eq!(format_count(3_500_000_000), "3.50B");
+    }
+
+    #[test]
+    fn progress_group_quiet_mode_is_inert() {
+        let group = ProgressGroup::new("phase", 2, true);
+        let mut progress = group.begin(1, "step");
+        progress.tick_sub_record();
+        progress.add_object();
+        progress.add_edges(10);
+        progress.finish("done");
+    }
+
+    #[test]
+    fn progress_group_tracks_counters_without_panic() {
+        let group = ProgressGroup::new("Indexing", 2, true);
+        let mut progress = group.begin(1, "scan");
+        progress.tick_segment();
+        progress.tick_sub_record();
+        progress.add_object();
+        progress.add_class();
+        progress.add_root();
+        progress.add_edges(3);
+        progress.add_nodes(5);
+        progress.finish("5 nodes indexed");
+    }
+}
