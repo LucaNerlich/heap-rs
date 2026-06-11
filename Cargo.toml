@@ -1,0 +1,12 @@
+[package]
+name = "heap-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+csv = "1"
+jvm-hprof = "0.1"
+memmap2 = "0.9"
+rayon = "1"
+rustc-hash = "2"

@@ -1,0 +1,306 @@
+use jvm_hprof::heap_dump::{FieldType, FieldValue, Instance, PrimitiveArrayType, SubRecord};
+use jvm_hprof::{Hprof, IdSize, RecordTag};
+use rustc_hash::FxHashMap;
+
+pub struct ClassLayout {
+    pub name: String,
+    pub super_class: Option<u64>,
+    pub instance_size: u32,
+    pub fields: Vec<FieldType>,
+}
+
+pub struct ObjectMeta {
+    pub addr: u64,
+    pub shallow: u32,
+    pub class_name: String,
+}
+
+pub struct HeapIndex {
+    pub id_size: IdSize,
+    pub classes: FxHashMap<u64, ClassLayout>,
+    pub objects: Vec<ObjectMeta>,
+    pub roots: Vec<u64>,
+}
+
+impl HeapIndex {
+    pub fn build(hprof: &Hprof<'_>) -> Result<Self, String> {
+        let id_size = hprof.header().id_size();
+        let mut utf8 = FxHashMap::default();
+        let mut load_class_names = FxHashMap::default();
+        let mut raw_classes: FxHashMap<u64, (Option<u64>, u32, Vec<FieldType>)> =
+            FxHashMap::default();
+        let mut objects = Vec::new();
+        let mut roots = Vec::new();
+
+        for record in hprof.records_iter() {
+            let record = record.map_err(|e| format!("{e:?}"))?;
+            match record.tag() {
+                RecordTag::Utf8 => {
+                    let parsed = record
+                        .as_utf_8()
+                        .ok_or_else(|| "expected utf8 record".to_string())?
+                        .map_err(|e| format!("{e:?}"))?;
+                    utf8.insert(
+                        parsed.name_id().id(),
+                        parsed
+                            .text_as_str()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|_| String::from_utf8_lossy(parsed.text()).into_owned()),
+                    );
+                }
+                RecordTag::LoadClass => {
+                    let lc = record
+                        .as_load_class()
+                        .ok_or_else(|| "expected load class".to_string())?
+                        .map_err(|e| format!("{e:?}"))?;
+                    if let Some(name) = utf8.get(&lc.class_name_id().id()) {
+                        load_class_names.insert(lc.class_obj_id().id(), name.clone());
+                    }
+                }
+                RecordTag::HeapDump | RecordTag::HeapDumpSegment => {
+                    let seg = record
+                        .as_heap_dump_segment()
+                        .ok_or_else(|| "expected heap dump".to_string())?
+                        .map_err(|e| format!("{e:?}"))?;
+                    for sub in seg.sub_records() {
+                        let sub = sub.map_err(|e| format!("{e:?}"))?;
+                        match sub {
+                            SubRecord::Class(c) => {
+                                let mut fields = Vec::new();
+                                for fd in c.instance_field_descriptors() {
+                                    fields.push(
+                                        fd.map_err(|e| format!("{e:?}"))?
+                                            .field_type(),
+                                    );
+                                }
+                                raw_classes.insert(
+                                    c.obj_id().id(),
+                                    (
+                                        c.super_class_obj_id().map(|id| id.id()),
+                                        c.instance_size_bytes(),
+                                        fields,
+                                    ),
+                                );
+                            }
+                            SubRecord::Instance(inst) => {
+                                let class_id = inst.class_obj_id().id();
+                                let name = class_name(class_id, &load_class_names);
+                                let shallow = raw_classes
+                                    .get(&class_id)
+                                    .map(|(_, sz, _)| *sz)
+                                    .unwrap_or(inst.fields().len() as u32);
+                                objects.push(ObjectMeta {
+                                    addr: inst.obj_id().id(),
+                                    shallow,
+                                    class_name: name,
+                                });
+                            }
+                            SubRecord::ObjectArray(arr) => {
+                                let name = array_class_name(
+                                    arr.array_class_obj_id().id(),
+                                    &load_class_names,
+                                );
+                                let ne = arr.elements(id_size).count() as u32;
+                                let shallow = array_shallow(ne, id_bytes(id_size));
+                                objects.push(ObjectMeta {
+                                    addr: arr.obj_id().id(),
+                                    shallow,
+                                    class_name: name,
+                                });
+                            }
+                            SubRecord::PrimitiveArray(arr) => {
+                                let ne = primitive_array_len(&arr);
+                                let shallow =
+                                    array_shallow(ne, primitive_elem_size(arr.primitive_type()));
+                                objects.push(ObjectMeta {
+                                    addr: arr.obj_id().id(),
+                                    shallow,
+                                    class_name: format!(
+                                        "{}[]",
+                                        arr.primitive_type().java_type_name()
+                                    ),
+                                });
+                            }
+                            SubRecord::GcRootUnknown(r) => roots.push(r.obj_id().id()),
+                            SubRecord::GcRootJniGlobal(r) => roots.push(r.obj_id().id()),
+                            SubRecord::GcRootJniLocalRef(r) => roots.push(r.obj_id().id()),
+                            SubRecord::GcRootJavaStackFrame(r) => roots.push(r.obj_id().id()),
+                            SubRecord::GcRootNativeStack(r) => roots.push(r.obj_id().id()),
+                            SubRecord::GcRootSystemClass(r) => roots.push(r.obj_id().id()),
+                            SubRecord::GcRootThreadBlock(r) => roots.push(r.obj_id().id()),
+                            SubRecord::GcRootBusyMonitor(r) => roots.push(r.obj_id().id()),
+                            SubRecord::GcRootThreadObj(r) => {
+                                if let Some(id) = r.thread_obj_id() {
+                                    roots.push(id.id());
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut classes = FxHashMap::default();
+        for &class_id in raw_classes.keys() {
+            let layout = build_class_layout(class_id, &raw_classes, &load_class_names);
+            classes.insert(class_id, layout);
+        }
+
+        roots.sort_unstable();
+        roots.dedup();
+
+        Ok(HeapIndex {
+            id_size,
+            classes,
+            objects,
+            roots,
+        })
+    }
+
+    pub fn extract_refs(&self, sub: &SubRecord<'_>) -> Result<Vec<u64>, String> {
+        let id_size = self.id_size;
+        match sub {
+            SubRecord::Instance(inst) => instance_refs(inst, id_size, &self.classes),
+            SubRecord::ObjectArray(arr) => {
+                let mut refs = Vec::new();
+                for elem in arr.elements(id_size) {
+                    if let Some(id) = elem.map_err(|e| format!("{e:?}"))? {
+                        refs.push(id.id());
+                    }
+                }
+                Ok(refs)
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+}
+
+fn id_bytes(id_size: IdSize) -> u8 {
+    match id_size {
+        IdSize::U32 => 4,
+        IdSize::U64 => 8,
+    }
+}
+
+fn build_class_layout(
+    class_id: u64,
+    raw: &FxHashMap<u64, (Option<u64>, u32, Vec<FieldType>)>,
+    names: &FxHashMap<u64, String>,
+) -> ClassLayout {
+    let mut chain = Vec::new();
+    let mut cur = Some(class_id);
+    let mut seen = FxHashMap::default();
+    while let Some(cid) = cur {
+        if seen.insert(cid, ()).is_some() {
+            break;
+        }
+        chain.push(cid);
+        cur = raw.get(&cid).and_then(|(sup, _, _)| *sup);
+    }
+
+    let mut fields = Vec::new();
+    let mut instance_size = 0u32;
+    let mut name = format!("0x{class_id:x}");
+    let mut super_class = None;
+
+    for &cid in chain.iter().rev() {
+        if let Some((sup, sz, local)) = raw.get(&cid) {
+            if cid == class_id {
+                instance_size = *sz;
+                super_class = *sup;
+                name = names
+                    .get(&cid)
+                    .cloned()
+                    .unwrap_or_else(|| format!("0x{cid:x}"));
+            }
+            fields.extend(local.iter().copied());
+        }
+    }
+
+    ClassLayout {
+        name,
+        super_class,
+        instance_size,
+        fields,
+    }
+}
+
+fn class_name(class_id: u64, names: &FxHashMap<u64, String>) -> String {
+    names
+        .get(&class_id)
+        .cloned()
+        .unwrap_or_else(|| format!("0x{class_id:x}"))
+}
+
+fn array_class_name(class_id: u64, names: &FxHashMap<u64, String>) -> String {
+    names
+        .get(&class_id)
+        .map(|n| format!("{n}[]"))
+        .unwrap_or_else(|| format!("0x{class_id:x}[]"))
+}
+
+fn primitive_elem_size(t: PrimitiveArrayType) -> u8 {
+    match t {
+        PrimitiveArrayType::Boolean | PrimitiveArrayType::Byte => 1,
+        PrimitiveArrayType::Char | PrimitiveArrayType::Short => 2,
+        PrimitiveArrayType::Float | PrimitiveArrayType::Int => 4,
+        PrimitiveArrayType::Double | PrimitiveArrayType::Long => 8,
+    }
+}
+
+fn primitive_array_len(arr: &jvm_hprof::heap_dump::PrimitiveArray<'_>) -> u32 {
+    if let Some(it) = arr.booleans() {
+        return it.count() as u32;
+    }
+    if let Some(it) = arr.chars() {
+        return it.count() as u32;
+    }
+    if let Some(it) = arr.floats() {
+        return it.count() as u32;
+    }
+    if let Some(it) = arr.doubles() {
+        return it.count() as u32;
+    }
+    if let Some(it) = arr.bytes() {
+        return it.count() as u32;
+    }
+    if let Some(it) = arr.shorts() {
+        return it.count() as u32;
+    }
+    if let Some(it) = arr.ints() {
+        return it.count() as u32;
+    }
+    if let Some(it) = arr.longs() {
+        return it.count() as u32;
+    }
+    0
+}
+
+fn array_shallow(num_elements: u32, elem_size: u8) -> u32 {
+    let payload = num_elements as u64 * elem_size as u64;
+    let total = 16u64 + payload;
+    ((total + 7) & !7) as u32
+}
+
+fn instance_refs(
+    inst: &Instance<'_>,
+    id_size: IdSize,
+    classes: &FxHashMap<u64, ClassLayout>,
+) -> Result<Vec<u64>, String> {
+    let Some(layout) = classes.get(&inst.class_obj_id().id()) else {
+        return Ok(Vec::new());
+    };
+    let mut refs = Vec::new();
+    let mut input: &[u8] = inst.fields();
+    for ft in &layout.fields {
+        let (rest, val) = ft
+            .parse_value(input, id_size)
+            .map_err(|e| format!("{e:?}"))?;
+        input = rest;
+        if let FieldValue::ObjectId(Some(id)) = val {
+            refs.push(id.id());
+        }
+    }
+    Ok(refs)
+}

@@ -1,0 +1,119 @@
+mod dominators;
+mod graph;
+mod index;
+mod report;
+mod retained;
+
+use clap::Parser;
+use jvm_hprof::parse_hprof;
+use memmap2::Mmap;
+use std::fs::File;
+use std::path::PathBuf;
+use std::time::Instant;
+
+#[derive(Parser, Debug)]
+#[command(name = "heap-rs", about = "Analyze Java hprof heap dumps for retained memory")]
+struct Args {
+    /// Path to the .hprof file
+    #[arg(short, long, default_value = "qa.hprof")]
+    file: PathBuf,
+
+    /// Number of top entries to print to the terminal
+    #[arg(short = 'n', long, default_value_t = 30)]
+    top: usize,
+
+    /// Write per-class CSV to this path
+    #[arg(long)]
+    csv: Option<PathBuf>,
+
+    /// Write per-object CSV to this path
+    #[arg(long)]
+    csv_objects: Option<PathBuf>,
+
+    /// Skip dominator computation (shallow histogram only)
+    #[arg(long)]
+    shallow_only: bool,
+}
+
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), String> {
+    let args = Args::parse();
+    let total_start = Instant::now();
+
+    println!("Opening {} …", args.file.display());
+    let file = File::open(&args.file).map_err(|e| e.to_string())?;
+    let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
+
+    let hprof = parse_hprof(&mmap[..]).map_err(|e| format!("{e:?}"))?;
+    println!(
+        "HPROF id_size={:?} timestamp={}",
+        hprof.header().id_size(),
+        hprof.header().timestamp_millis()
+    );
+
+    let t0 = Instant::now();
+    println!("Pass 1: indexing heap …");
+    let index = index::HeapIndex::build(&hprof)?;
+    let pass1 = t0.elapsed();
+    println!(
+        "  {} objects, {} classes, {} roots ({pass1:.1?})",
+        index.objects.len(),
+        index.classes.len(),
+        index.roots.len()
+    );
+
+    let t1 = Instant::now();
+    println!("Building object graph …");
+    let graph = graph::ObjectGraph::build(&hprof, &index)?;
+    let graph_time = t1.elapsed();
+    println!("  {} edges ({graph_time:.1?})", graph.targets.len());
+
+    report::print_shallow_histogram(&graph, args.top);
+
+    if args.shallow_only {
+        if let Some(path) = &args.csv {
+            let rows: Vec<retained::ClassRetainedRow> = graph
+                .shallow_histogram()
+                .into_iter()
+                .map(|(name, count, bytes)| retained::ClassRetainedRow {
+                    class_name: name,
+                    instance_count: count,
+                    shallow_bytes: bytes,
+                    retained_bytes: bytes,
+                })
+                .collect();
+            report::write_class_csv(path, &rows).map_err(|e| e.to_string())?;
+            println!("Wrote class CSV to {}", path.display());
+        }
+        println!("Done in {:.1?}", total_start.elapsed());
+        return Ok(());
+    }
+
+    let t2 = Instant::now();
+    println!("Computing dominators and retained sizes …");
+    let analysis = retained::compute_retained(&graph);
+    let retained_time = t2.elapsed();
+    println!("  ({retained_time:.1?})");
+
+    report::print_summary(&analysis, &graph);
+    report::print_class_table(&analysis.class_rows, args.top);
+    report::print_object_table(&analysis.top_objects, args.top);
+
+    if let Some(path) = &args.csv {
+        report::write_class_csv(path, &analysis.class_rows).map_err(|e| e.to_string())?;
+        println!("Wrote class CSV to {}", path.display());
+    }
+    if let Some(path) = &args.csv_objects {
+        report::write_object_csv(path, &analysis.top_objects, None).map_err(|e| e.to_string())?;
+        println!("Wrote object CSV to {}", path.display());
+    }
+
+    println!("Done in {:.1?}", total_start.elapsed());
+    Ok(())
+}
