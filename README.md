@@ -107,12 +107,29 @@ heap-rs [OPTIONS]
 | `--csv-objects <PATH>` | Write a per-object CSV report (full mode only) |
 | `--shallow-only` | Skip dominator computation; output shallow histogram only |
 | `--quiet` | Disable live progress spinners (plain log output for CI) |
+| `-j`, `--jobs <N>` | Worker threads for parallel phases (default: logical CPU count) |
 
 ### Examples
 
 All examples below use the release binary; with Cargo, replace `./target/release/heap-rs` with `cargo run --release --`.
 
-**Full retained-size analysis** (recommended when you have enough RAM and time):
+**Full analysis** — retained sizes, CSV export, parallel workers, filtered object table, and `byte[]` retainer breakdown:
+
+```bash
+cargo run --release -- \
+  --file heap.hprof \
+  --top 50 \
+  --jobs 8 \
+  --class 'byte[]' \
+  --explain-class 'byte[]' \
+  --csv classes.csv \
+  --csv-objects top-objects.csv \
+  --quiet
+```
+
+This runs the complete pipeline (dominators + retained aggregation), prints the top 50 rows in each table, limits the object table to `byte[]`, explains who references those arrays, writes class and object CSVs, and uses 8 worker threads. Drop `--quiet` to see live progress spinners.
+
+**Full retained-size analysis** (minimal flags):
 
 ```bash
 cargo run --release -- --file heap.hprof --top 50
@@ -200,6 +217,26 @@ Class names match the same rules as `--class`: exact name, suffix after `/`, or 
 
 Use `--shallow-only` to stop after step 3 and get a fast sanity check that parsing is correct.
 
+### Parallelism
+
+Several phases use [Rayon](https://github.com/rayon-rs/rayon) to run work across all logical CPUs:
+
+| Phase | Parallel work |
+|-------|----------------|
+| Pass 1 | Final class layout merge across inheritance chains |
+| Object graph | Address sort, metadata mapping, edge-list sort, CSR target fill, shallow histogram |
+| Retained sizes | Per-depth dominator accumulation, class aggregation, object ranking |
+| `--explain-class` | Scanning matched instances and retainer classes |
+
+The **HPROF file scan** (pass 1 heap walk and edge collection) stays sequential because records are read from a single iterator. The **Lengauer–Tarjan dominator** pass is also sequential — it has tight dependencies between nodes.
+
+Control thread count with `--jobs N` or the `RAYON_NUM_THREADS` environment variable:
+
+```bash
+heap-rs --file heap.hprof --jobs 8
+RAYON_NUM_THREADS=16 heap-rs --file heap.hprof
+```
+
 During indexing and graph building, a live spinner reports throughput (sub-records/s), object/class/root counts, and elapsed time. Use `--quiet` to disable spinners and emit one summary line per phase instead.
 
 ## Memory
@@ -222,7 +259,8 @@ src/
   lib.rs         Library API (used by tests and the binary)
   index.rs       Pass 1: parse heap, build class layouts and object list
   graph.rs       Object graph (CSR edges) and shallow histogram
-  dominators.rs  Lengauer–Tarjan dominator computation
+  dominators.rs  Lengauer–Tarjan dominator computation (sequential)
+  parallel.rs    Rayon thread-pool configuration
   retained.rs    Retained-size aggregation and class explanation
   report.rs      Terminal tables and CSV export
   testutil/      Synthetic HPROF fixtures for tests

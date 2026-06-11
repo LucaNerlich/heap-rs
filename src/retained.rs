@@ -33,6 +33,7 @@ pub struct RetainerRow {
     pub shallow_bytes: u64,
 }
 
+#[derive(Clone)]
 pub struct ExplainedInstance {
     pub addr: u64,
     pub shallow_bytes: u64,
@@ -60,13 +61,6 @@ pub fn explain_class(
     top_instances: usize,
     top_retainers: usize,
 ) -> Option<ClassExplanation> {
-    let mut class_name = None;
-    let mut instance_count = 0u64;
-    let mut total_shallow = 0u64;
-    let mut instances = Vec::new();
-    let mut retainer_counts: rustc_hash::FxHashMap<String, (u64, u64)> =
-        rustc_hash::FxHashMap::default();
-
     let mut preds: Vec<Vec<u32>> = vec![Vec::new(); graph.num_nodes];
     for v in 0..graph.num_nodes {
         let start = graph.offsets[v] as usize;
@@ -79,62 +73,88 @@ pub fn explain_class(
         preds[r as usize].push(graph.super_root);
     }
 
-    for v in 0..graph.num_nodes {
-        let name = &graph.class_names[graph.object_class[v] as usize];
-        if !class_matches(name, class_filter) {
-            continue;
-        }
-        class_name = Some(name.clone());
-        instance_count += 1;
-        let shallow = graph.shallow[v] as u64;
-        total_shallow += shallow;
-
-        let (retainer_class, retainer_addr) = if preds[v].is_empty() {
-            ("(no incoming refs)".to_string(), 0)
-        } else {
-            // Use the shallowest predecessor as the representative retainer for this instance.
-            let &dom = preds[v]
-                .iter()
-                .min_by_key(|&&u| {
-                    if u == graph.super_root {
-                        u64::MAX
-                    } else {
-                        graph.shallow[u as usize] as u64
-                    }
-                })
-                .unwrap_or(&preds[v][0]);
-            if dom == graph.super_root {
-                ("GC root".to_string(), 0)
-            } else {
-                (
-                    graph.class_names[graph.object_class[dom as usize] as usize].clone(),
-                    graph.addrs[dom as usize],
-                )
+    let matched: Vec<(ExplainedInstance, Vec<(String, u64)>)> = (0..graph.num_nodes)
+        .into_par_iter()
+        .filter_map(|v| {
+            let name = &graph.class_names[graph.object_class[v] as usize];
+            if !class_matches(name, class_filter) {
+                return None;
             }
-        };
+            let shallow = graph.shallow[v] as u64;
 
-        instances.push(ExplainedInstance {
-            addr: graph.addrs[v],
-            shallow_bytes: shallow,
-            retainer_class: retainer_class.clone(),
-            retainer_addr,
-        });
-
-        for &pred in &preds[v] {
-            let rc = if pred == graph.super_root {
-                "GC root".to_string()
+            let (retainer_class, retainer_addr) = if preds[v].is_empty() {
+                ("(no incoming refs)".to_string(), 0)
             } else {
-                graph.class_names[graph.object_class[pred as usize] as usize].clone()
+                let &dom = preds[v]
+                    .iter()
+                    .min_by_key(|&&u| {
+                        if u == graph.super_root {
+                            u64::MAX
+                        } else {
+                            graph.shallow[u as usize] as u64
+                        }
+                    })
+                    .unwrap_or(&preds[v][0]);
+                if dom == graph.super_root {
+                    ("GC root".to_string(), 0)
+                } else {
+                    (
+                        graph.class_names[graph.object_class[dom as usize] as usize].clone(),
+                        graph.addrs[dom as usize],
+                    )
+                }
             };
-            let entry = retainer_counts.entry(rc).or_insert((0, 0));
+
+            let retainer_hits: Vec<(String, u64)> = preds[v]
+                .iter()
+                .map(|&pred| {
+                    let rc = if pred == graph.super_root {
+                        "GC root".to_string()
+                    } else {
+                        graph.class_names[graph.object_class[pred as usize] as usize].clone()
+                    };
+                    (rc, shallow)
+                })
+                .collect();
+
+            Some((
+                ExplainedInstance {
+                    addr: graph.addrs[v],
+                    shallow_bytes: shallow,
+                    retainer_class,
+                    retainer_addr,
+                },
+                retainer_hits,
+            ))
+        })
+        .collect();
+
+    if matched.is_empty() {
+        return None;
+    }
+
+    let class_name = (0..graph.num_nodes)
+        .find(|&v| class_matches(&graph.class_names[graph.object_class[v] as usize], class_filter))
+        .map(|v| graph.class_names[graph.object_class[v] as usize].clone())
+        .expect("matched non-empty");
+
+    let instance_count = matched.len() as u64;
+    let total_shallow = matched.iter().map(|(i, _)| i.shallow_bytes).sum();
+
+    let mut instances: Vec<ExplainedInstance> =
+        matched.iter().map(|(inst, _)| inst.clone()).collect();
+    instances.sort_by(|a, b| b.shallow_bytes.cmp(&a.shallow_bytes));
+    instances.truncate(top_instances);
+
+    let mut retainer_counts: rustc_hash::FxHashMap<String, (u64, u64)> =
+        rustc_hash::FxHashMap::default();
+    for (_, hits) in &matched {
+        for (rc, shallow) in hits {
+            let entry = retainer_counts.entry(rc.clone()).or_insert((0, 0));
             entry.0 += 1;
             entry.1 += shallow;
         }
     }
-
-    let class_name = class_name?;
-    instances.sort_by(|a, b| b.shallow_bytes.cmp(&a.shallow_bytes));
-    instances.truncate(top_instances);
 
     let mut retainer_rows: Vec<RetainerRow> = retainer_counts
         .into_iter()
@@ -185,16 +205,25 @@ pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
         }
     }
 
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by_key(|&v| std::cmp::Reverse(depth[v]));
+    let max_depth = depth.iter().copied().max().unwrap_or(0);
 
     let mut retained = vec![0u64; n];
-    for &v in &order {
-        retained[v] = graph.shallow[v] as u64;
-        for &c in &dom_children[v] {
-            retained[v] += retained[c as usize];
+    for d in (0..=max_depth).rev() {
+        let nodes_at_depth: Vec<usize> = (0..n).filter(|&v| depth[v] == d).collect();
+        let updates: Vec<(usize, u64)> = nodes_at_depth
+            .par_iter()
+            .map(|&v| {
+                let mut sum = graph.shallow[v] as u64;
+                for &c in &dom_children[v] {
+                    sum += retained[c as usize];
+                }
+                (v, sum)
+            })
+            .collect();
+        for (v, sum) in updates {
+            retained[v] = sum;
         }
-        progress.add_nodes(1);
+        progress.add_nodes(nodes_at_depth.len() as u64);
     }
     progress.finish(format!(
         "Retained sizes for {} objects",
@@ -203,27 +232,58 @@ pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
 
     let progress = group.begin(3, "aggregating by class");
     let k = graph.class_names.len();
-    let mut class_count = vec![0u64; k];
-    let mut class_shallow = vec![0u64; k];
-    let mut class_retained = vec![0u64; k];
 
-    let mut reachable = 0u64;
-    let mut unreachable = 0u64;
-    let mut total_shallow = 0u64;
-
-    for v in 0..n {
-        total_shallow += graph.shallow[v] as u64;
-        let c = graph.object_class[v] as usize;
-        class_count[c] += 1;
-        class_shallow[c] += graph.shallow[v] as u64;
-        class_retained[c] += retained[v];
-
-        if depth[v] > 0 {
-            reachable += 1;
-        } else {
-            unreachable += 1;
-        }
-    }
+    let (class_count, class_shallow, class_retained, reachable, unreachable, total_shallow) =
+        (0..n)
+            .into_par_iter()
+            .fold(
+                || {
+                    (
+                        vec![0u64; k],
+                        vec![0u64; k],
+                        vec![0u64; k],
+                        0u64,
+                        0u64,
+                        0u64,
+                    )
+                },
+                |mut acc, v| {
+                    acc.5 += graph.shallow[v] as u64;
+                    let c = graph.object_class[v] as usize;
+                    acc.0[c] += 1;
+                    acc.1[c] += graph.shallow[v] as u64;
+                    acc.2[c] += retained[v];
+                    if depth[v] > 0 {
+                        acc.3 += 1;
+                    } else {
+                        acc.4 += 1;
+                    }
+                    acc
+                },
+            )
+            .reduce(
+                || {
+                    (
+                        vec![0u64; k],
+                        vec![0u64; k],
+                        vec![0u64; k],
+                        0u64,
+                        0u64,
+                        0u64,
+                    )
+                },
+                |mut a, b| {
+                    for i in 0..k {
+                        a.0[i] += b.0[i];
+                        a.1[i] += b.1[i];
+                        a.2[i] += b.2[i];
+                    }
+                    a.3 += b.3;
+                    a.4 += b.4;
+                    a.5 += b.5;
+                    a
+                },
+            );
 
     let mut class_rows: Vec<ClassRetainedRow> = graph
         .class_names
@@ -239,6 +299,7 @@ pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
     class_rows.par_sort_unstable_by(|a, b| b.retained_bytes.cmp(&a.retained_bytes));
 
     let mut object_rows: Vec<ObjectRetainedRow> = (0..n)
+        .into_par_iter()
         .map(|v| ObjectRetainedRow {
             addr: graph.addrs[v],
             class_name: graph.class_names[graph.object_class[v] as usize].clone(),

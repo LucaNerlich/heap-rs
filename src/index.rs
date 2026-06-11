@@ -1,6 +1,7 @@
 use crate::progress::ProgressGroup;
 use jvm_hprof::heap_dump::{FieldType, FieldValue, Instance, PrimitiveArrayType, SubRecord};
 use jvm_hprof::{Hprof, IdSize, RecordTag};
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::time::Instant;
 
@@ -202,13 +203,16 @@ impl HeapIndex {
             ));
         }
 
-        let mut progress = group.begin(3, "finalizing class layouts");
-        let mut classes = FxHashMap::default();
-        for &class_id in raw_classes.keys() {
-            let layout = build_class_layout(class_id, &raw_classes, &load_class_names);
-            classes.insert(class_id, layout);
-            progress.add_nodes(1);
-        }
+        let progress = group.begin(3, "finalizing class layouts");
+        let classes: FxHashMap<u64, ClassLayout> = raw_classes
+            .par_iter()
+            .map(|(&class_id, _)| {
+                (
+                    class_id,
+                    build_class_layout(class_id, &raw_classes, &load_class_names),
+                )
+            })
+            .collect();
 
         roots.sort_unstable();
         roots.dedup();

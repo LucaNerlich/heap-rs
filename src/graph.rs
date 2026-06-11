@@ -22,37 +22,45 @@ impl ObjectGraph {
     pub fn build(hprof: &Hprof<'_>, index: &HeapIndex, quiet: bool) -> Result<Self, String> {
         let n = index.objects.len();
         let started = Instant::now();
-        let group = ProgressGroup::new("Building object graph", 5, quiet);
+        let group = ProgressGroup::new("Building object graph", 4, quiet);
 
         let progress = group.begin(1, "sorting addresses");
         let mut addrs: Vec<u64> = index.objects.iter().map(|o| o.addr).collect();
         addrs.par_sort_unstable();
         progress.finish(format!("Sorted {} object addresses", format_count(n as u64)));
 
-        let mut progress = group.begin(2, "building address index");
+        let progress = group.begin(2, "mapping object metadata");
         let addr_to_id: FxHashMap<u64, u32> = addrs
             .iter()
             .enumerate()
             .map(|(i, &a)| (a, i as u32))
             .collect();
 
-        let mut shallow = vec![0u32; n];
-        let mut object_class = vec![0u32; n];
         let mut class_names: Vec<String> = Vec::new();
         let mut class_name_to_idx: FxHashMap<String, u32> = FxHashMap::default();
-
         for obj in &index.objects {
-            let id = addr_to_id[&obj.addr] as usize;
-            shallow[id] = obj.shallow;
-            let class_idx = *class_name_to_idx
+            class_name_to_idx
                 .entry(obj.class_name.clone())
                 .or_insert_with(|| {
                     let idx = class_names.len() as u32;
                     class_names.push(obj.class_name.clone());
                     idx
                 });
-            object_class[id] = class_idx;
-            progress.add_nodes(1);
+        }
+
+        let mut shallow = vec![0u32; n];
+        let mut object_class = vec![0u32; n];
+        let metadata: Vec<(usize, u32, u32)> = index
+            .objects
+            .par_iter()
+            .map(|obj| {
+                let id = addr_to_id[&obj.addr] as usize;
+                (id, obj.shallow, class_name_to_idx[&obj.class_name])
+            })
+            .collect();
+        for (id, s, c) in metadata {
+            shallow[id] = s;
+            object_class[id] = c;
         }
 
         let mut roots: Vec<u32> = index
@@ -60,7 +68,7 @@ impl ObjectGraph {
             .iter()
             .filter_map(|&a| addr_to_id.get(&a).copied())
             .collect();
-        roots.sort_unstable();
+        roots.par_sort_unstable();
         roots.dedup();
         progress.finish(format!(
             "{} objects, {} classes, {} roots mapped",
@@ -69,64 +77,10 @@ impl ObjectGraph {
             format_count(roots.len() as u64)
         ));
 
-        let mut progress = group.begin(3, "counting edges");
-        let count_started = Instant::now();
-        let mut offsets = vec![0u32; n + 1];
+        let mut progress = group.begin(3, "collecting edges");
+        let collect_started = Instant::now();
+        let mut edge_list: Vec<(u32, u32)> = Vec::new();
 
-        for record in hprof.records_iter() {
-            let record = record.map_err(|e| format!("{e:?}"))?;
-            if !matches!(record.tag(), RecordTag::HeapDump | RecordTag::HeapDumpSegment) {
-                continue;
-            }
-            progress.tick_segment();
-            let seg = record
-                .as_heap_dump_segment()
-                .ok_or_else(|| "expected heap dump".to_string())?
-                .map_err(|e| format!("{e:?}"))?;
-            for sub in seg.sub_records() {
-                let sub = sub.map_err(|e| format!("{e:?}"))?;
-                progress.tick_sub_record();
-                let (from_id, refs) = match &sub {
-                    SubRecord::Instance(inst) => {
-                        (inst.obj_id().id(), index.extract_refs(&sub)?)
-                    }
-                    SubRecord::ObjectArray(arr) => {
-                        (arr.obj_id().id(), index.extract_refs(&sub)?)
-                    }
-                    _ => continue,
-                };
-                let Some(&from) = addr_to_id.get(&from_id) else {
-                    continue;
-                };
-                let mut edge_batch = 0u64;
-                for addr in refs {
-                    if addr_to_id.contains_key(&addr) {
-                        offsets[from as usize + 1] += 1;
-                        edge_batch += 1;
-                    }
-                }
-                progress.add_edges(edge_batch);
-            }
-        }
-
-        progress.finish(format!(
-            "Counted {} edges in {:.1?}",
-            format_count(offsets[n] as u64),
-            count_started.elapsed()
-        ));
-
-        let progress = group.begin(4, "allocating edge buffer");
-        for i in 0..n {
-            offsets[i + 1] += offsets[i];
-        }
-        let mut targets = vec![0u32; offsets[n] as usize];
-        let mut write_pos = offsets.clone();
-        progress.finish(format!(
-            "Allocated buffer for {} edges",
-            format_count(offsets[n] as u64)
-        ));
-
-        let mut progress = group.begin(5, "writing edges");
         for record in hprof.records_iter() {
             let record = record.map_err(|e| format!("{e:?}"))?;
             if !matches!(record.tag(), RecordTag::HeapDump | RecordTag::HeapDumpSegment) {
@@ -155,15 +109,35 @@ impl ObjectGraph {
                 let mut edge_batch = 0u64;
                 for addr in refs {
                     if let Some(&target) = addr_to_id.get(&addr) {
-                        let pos = write_pos[from as usize] as usize;
-                        targets[pos] = target;
-                        write_pos[from as usize] += 1;
+                        edge_list.push((from, target));
                         edge_batch += 1;
                     }
                 }
                 progress.add_edges(edge_batch);
             }
         }
+
+        progress.finish(format!(
+            "Collected {} edges in {:.1?}",
+            format_count(edge_list.len() as u64),
+            collect_started.elapsed()
+        ));
+
+        let progress = group.begin(4, "building CSR adjacency");
+        edge_list.par_sort_unstable_by_key(|&(from, _)| from);
+
+        let m = edge_list.len();
+        let mut offsets = vec![0u32; n + 1];
+        let mut idx = 0usize;
+        for from in 0..n {
+            offsets[from] = idx as u32;
+            while idx < m && edge_list[idx].0 == from as u32 {
+                idx += 1;
+            }
+        }
+        offsets[n] = idx as u32;
+
+        let targets: Vec<u32> = edge_list.par_iter().map(|&(_, to)| to).collect();
 
         progress.finish(format!(
             "Object graph done: {} edges, {} objects in {:.1?}",
@@ -187,20 +161,39 @@ impl ObjectGraph {
 
     pub fn shallow_histogram(&self) -> Vec<(String, u64, u64)> {
         let k = self.class_names.len();
-        let mut counts = vec![0u64; k];
-        let mut bytes = vec![0u64; k];
-        for i in 0..self.num_nodes {
-            let c = self.object_class[i] as usize;
-            counts[c] += 1;
-            bytes[c] += self.shallow[i] as u64;
+        if k == 0 {
+            return Vec::new();
         }
+
+        let (counts, bytes) = (0..self.num_nodes)
+            .into_par_iter()
+            .fold(
+                || (vec![0u64; k], vec![0u64; k]),
+                |mut acc, i| {
+                    let c = self.object_class[i] as usize;
+                    acc.0[c] += 1;
+                    acc.1[c] += self.shallow[i] as u64;
+                    acc
+                },
+            )
+            .reduce(
+                || (vec![0u64; k], vec![0u64; k]),
+                |mut a, b| {
+                    for i in 0..k {
+                        a.0[i] += b.0[i];
+                        a.1[i] += b.1[i];
+                    }
+                    a
+                },
+            );
+
         let mut rows: Vec<(String, u64, u64)> = self
             .class_names
             .iter()
             .enumerate()
             .map(|(i, name)| (name.clone(), counts[i], bytes[i]))
             .collect();
-        rows.sort_by(|a, b| b.2.cmp(&a.2));
+        rows.par_sort_unstable_by(|a, b| b.2.cmp(&a.2));
         rows
     }
 }

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-06-11
+
+### Added
+
+- `--jobs` / `-j` flag to control worker thread count for parallel analysis phases
+
+### Changed
+
+- Parallel analysis with Rayon across class layout finalization, object graph construction, retained-size aggregation, and `--explain-class`
+- Object graph build uses a single heap scan instead of two when collecting edges
+- README documents parallelism, `--jobs`, and a full example command with CSV export and `byte[]` analysis
+
 ## [1.0.2] - 2026-06-11
 
 ### Changed

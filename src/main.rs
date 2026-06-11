@@ -40,6 +40,10 @@ struct Args {
     /// Disable progress spinners (for CI/log files)
     #[arg(long)]
     quiet: bool,
+
+    /// Number of worker threads for parallel phases (default: logical CPU count)
+    #[arg(long = "jobs", short = 'j')]
+    jobs: Option<usize>,
 }
 
 fn main() {
@@ -51,6 +55,8 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args = Args::parse();
+    heap_rs::parallel::configure(args.jobs)?;
+
     let total_start = Instant::now();
 
     println!("Opening {} …", args.file.display());
