@@ -1,7 +1,13 @@
 [package]
 name = "heap-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+description = "Fast CLI for analyzing Java .hprof heap dumps with retained sizes and retainer analysis"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/LucaNerlich/heap-rs"
+keywords = ["hprof", "heap", "java", "memory", "profiler"]
+categories = ["command-line-utilities", "development-tools"]
 
 [lib]
 name = "heap_rs"

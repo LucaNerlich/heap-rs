@@ -231,4 +231,4 @@ tests/           Integration and CLI tests
 
 ## License
 
-See repository license file if present.
+MIT — see [LICENSE](LICENSE).
