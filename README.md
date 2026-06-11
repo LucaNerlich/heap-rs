@@ -9,9 +9,63 @@ A fast CLI tool for analyzing Java `.hprof` heap dumps. It reports **per-class m
 
 Supported dump format: **JAVA PROFILE 1.0.2** (standard HotSpot / OpenJDK output, including segmented `HEAP_DUMP_SEGMENT` records).
 
+## Build & run with Cargo
+
+From the project root:
+
+**Debug build** (faster compile, slower runtime):
+
+```bash
+cargo build
+```
+
+**Release build** (recommended for large dumps):
+
+```bash
+cargo build --release
+```
+
+The binary lands at `target/release/heap-rs` (or `target/debug/heap-rs` for debug).
+
+### Run without installing
+
+Pass CLI flags after `--` so Cargo does not consume them:
+
+```bash
+# release
+cargo run --release -- --file heap.hprof --top 50
+
+# debug
+cargo run -- --file heap.hprof --shallow-only --top 20
+```
+
+Or invoke the built binary directly:
+
+```bash
+./target/release/heap-rs --file heap.hprof --top 50
+```
+
+### Install onto your PATH
+
+```bash
+cargo install --path .
+```
+
+Then run from anywhere:
+
+```bash
+heap-rs --file heap.hprof --csv classes.csv
+```
+
+To reinstall after pulling changes:
+
+```bash
+cargo install --path . --force
+```
+
 ## Installation
 
-Clone the repository and build a release binary:
+If you do not have Rust yet, install it from [rustup.rs](https://rustup.rs/), then clone and build:
 
 ```bash
 git clone <repo-url>
@@ -19,13 +73,7 @@ cd heap-rs
 cargo build --release
 ```
 
-The binary is written to `target/release/heap-rs`.
-
-Optionally install it onto your `PATH`:
-
-```bash
-cargo install --path .
-```
+See [Build & run with Cargo](#build--run-with-cargo) for `cargo run`, `cargo install`, and other workflows.
 
 ## Capturing a heap dump
 
@@ -59,24 +107,25 @@ heap-rs [OPTIONS]
 
 ### Examples
 
+All examples below use the release binary; with Cargo, replace `./target/release/heap-rs` with `cargo run --release --`.
+
 **Full retained-size analysis** (recommended when you have enough RAM and time):
 
 ```bash
-./target/release/heap-rs --file heap.hprof --top 50
+cargo run --release -- --file heap.hprof --top 50
+# or: ./target/release/heap-rs --file heap.hprof --top 50
 ```
 
 **Export class breakdown to CSV:**
 
 ```bash
-./target/release/heap-rs --file heap.hprof \
-  --csv classes.csv \
-  --csv-objects top-objects.csv
+cargo run --release -- --file heap.hprof --csv classes.csv --csv-objects top-objects.csv
 ```
 
 **Quick shallow histogram** (faster; no dominator tree):
 
 ```bash
-./target/release/heap-rs --file heap.hprof --shallow-only --top 20
+cargo run --release -- --file heap.hprof --shallow-only --top 20
 ```
 
 ## Output
