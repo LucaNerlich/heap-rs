@@ -1,5 +1,7 @@
 # heap-rs
 
+[![Crates.io](https://img.shields.io/crates/v/heap-rs)](https://crates.io/crates/heap-rs)
+
 A fast CLI tool for analyzing Java `.hprof` heap dumps. It reports **per-class memory usage** down to the actual class name, and (in full mode) **retained sizes** via a dominator tree — similar to what Eclipse MAT provides.
 
 ## Requirements
