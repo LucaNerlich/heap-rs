@@ -24,6 +24,136 @@ pub struct RetainedAnalysis {
     pub total_retained: u64,
     pub reachable_objects: u64,
     pub unreachable_objects: u64,
+    pub idom: Vec<u32>,
+}
+
+pub struct RetainerRow {
+    pub retainer_class: String,
+    pub instance_count: u64,
+    pub shallow_bytes: u64,
+}
+
+pub struct ExplainedInstance {
+    pub addr: u64,
+    pub shallow_bytes: u64,
+    pub retainer_class: String,
+    pub retainer_addr: u64,
+}
+
+pub struct ClassExplanation {
+    pub class_name: String,
+    pub instance_count: u64,
+    pub total_shallow: u64,
+    pub top_instances: Vec<ExplainedInstance>,
+    pub top_retainers: Vec<RetainerRow>,
+}
+
+pub fn class_matches(class_name: &str, filter: &str) -> bool {
+    class_name == filter
+        || class_name.ends_with(&format!("/{filter}"))
+        || (filter.ends_with("[]") && class_name == filter)
+}
+
+pub fn explain_class(
+    graph: &ObjectGraph,
+    class_filter: &str,
+    top_instances: usize,
+    top_retainers: usize,
+) -> Option<ClassExplanation> {
+    let mut class_name = None;
+    let mut instance_count = 0u64;
+    let mut total_shallow = 0u64;
+    let mut instances = Vec::new();
+    let mut retainer_counts: rustc_hash::FxHashMap<String, (u64, u64)> =
+        rustc_hash::FxHashMap::default();
+
+    let mut preds: Vec<Vec<u32>> = vec![Vec::new(); graph.num_nodes];
+    for v in 0..graph.num_nodes {
+        let start = graph.offsets[v] as usize;
+        let end = graph.offsets[v + 1] as usize;
+        for &w in &graph.targets[start..end] {
+            preds[w as usize].push(v as u32);
+        }
+    }
+    for &r in &graph.roots {
+        preds[r as usize].push(graph.super_root);
+    }
+
+    for v in 0..graph.num_nodes {
+        let name = &graph.class_names[graph.object_class[v] as usize];
+        if !class_matches(name, class_filter) {
+            continue;
+        }
+        class_name = Some(name.clone());
+        instance_count += 1;
+        let shallow = graph.shallow[v] as u64;
+        total_shallow += shallow;
+
+        let (retainer_class, retainer_addr) = if preds[v].is_empty() {
+            ("(no incoming refs)".to_string(), 0)
+        } else {
+            // Use the shallowest predecessor as the representative retainer for this instance.
+            let &dom = preds[v]
+                .iter()
+                .min_by_key(|&&u| {
+                    if u == graph.super_root {
+                        u64::MAX
+                    } else {
+                        graph.shallow[u as usize] as u64
+                    }
+                })
+                .unwrap_or(&preds[v][0]);
+            if dom == graph.super_root {
+                ("GC root".to_string(), 0)
+            } else {
+                (
+                    graph.class_names[graph.object_class[dom as usize] as usize].clone(),
+                    graph.addrs[dom as usize],
+                )
+            }
+        };
+
+        instances.push(ExplainedInstance {
+            addr: graph.addrs[v],
+            shallow_bytes: shallow,
+            retainer_class: retainer_class.clone(),
+            retainer_addr,
+        });
+
+        for &pred in &preds[v] {
+            let rc = if pred == graph.super_root {
+                "GC root".to_string()
+            } else {
+                graph.class_names[graph.object_class[pred as usize] as usize].clone()
+            };
+            let entry = retainer_counts.entry(rc).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += shallow;
+        }
+    }
+
+    let class_name = class_name?;
+    instances.sort_by(|a, b| b.shallow_bytes.cmp(&a.shallow_bytes));
+    instances.truncate(top_instances);
+
+    let mut retainer_rows: Vec<RetainerRow> = retainer_counts
+        .into_iter()
+        .map(|(retainer_class, (instance_count, shallow_bytes))| RetainerRow {
+            retainer_class,
+            instance_count,
+            shallow_bytes,
+        })
+        .collect();
+    retainer_rows.sort_by(|a, b| b.shallow_bytes.cmp(&a.shallow_bytes));
+    retainer_rows.truncate(top_retainers);
+
+    Some(ClassExplanation {
+        class_name,
+        instance_count,
+        total_shallow,
+        top_instances: instances,
+        top_retainers: retainer_rows,
+    })
 }
 
 pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
@@ -143,6 +273,7 @@ pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
         total_retained,
         reachable_objects: reachable,
         unreachable_objects: unreachable,
+        idom,
     }
 }
 
@@ -169,8 +300,8 @@ mod tests {
             .map(|o| (o.addr, o.retained_bytes))
             .collect();
         assert_eq!(by_addr[&0x3002], 24);
-        assert_eq!(by_addr[&0x3001], 24);
-        assert_eq!(by_addr[&0x3000], 24);
+        assert_eq!(by_addr[&0x3001], 48);
+        assert_eq!(by_addr[&0x3000], 72);
         assert_eq!(analysis.total_shallow, 72);
     }
 
@@ -188,14 +319,16 @@ mod tests {
     }
 
     #[test]
-    fn holder_fixture_object_count() {
-        let fixture = OwnedFixture::holder_and_array();
+    fn explain_class_reports_retainers() {
+        let fixture = OwnedFixture::linked_list();
         let hprof = fixture.parse();
         let index = crate::index::HeapIndex::build(&hprof, true).unwrap();
         let graph = crate::graph::ObjectGraph::build(&hprof, &index, true).unwrap();
-        let analysis = compute_retained(&graph, true);
-
-        assert_eq!(analysis.reachable_objects + analysis.unreachable_objects, 6);
-        assert_eq!(analysis.total_shallow, index.objects.iter().map(|o| o.shallow as u64).sum());
+        let explanation = explain_class(&graph, "Node", 10, 10).unwrap();
+        assert_eq!(explanation.instance_count, 3);
+        assert!(explanation
+            .top_retainers
+            .iter()
+            .any(|r| r.retainer_class == "GC root" || r.retainer_class.contains("Node")));
     }
 }

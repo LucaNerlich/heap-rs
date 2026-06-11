@@ -59,14 +59,25 @@ pub fn print_class_table(rows: &[ClassRetainedRow], top: usize) {
     println!();
 }
 
-pub fn print_object_table(rows: &[ObjectRetainedRow], top: usize) {
-    println!("=== Top {top} Objects by Retained Size ===");
+pub fn print_object_table(rows: &[ObjectRetainedRow], top: usize, class_filter: Option<&str>) {
+    let filtered: Vec<_> = match class_filter {
+        Some(f) => rows
+            .iter()
+            .filter(|r| crate::retained::class_matches(&r.class_name, f))
+            .collect(),
+        None => rows.iter().collect(),
+    };
+    let title = match class_filter {
+        Some(f) => format!("Top {top} `{f}` Objects by Retained Size"),
+        None => format!("Top {top} Objects by Retained Size"),
+    };
+    println!("=== {title} ===");
     println!(
         "{:<6} {:>18} {:<50} {:>10} {:>14}",
         "Rank", "Address", "Class", "Shallow", "Retained"
     );
     println!("{}", "-".repeat(104));
-    for (i, row) in rows.iter().take(top).enumerate() {
+    for (i, row) in filtered.iter().take(top).enumerate() {
         println!(
             "{:<6} 0x{:016x} {:<50} {:>10} {:>14}",
             i + 1,
@@ -74,6 +85,71 @@ pub fn print_object_table(rows: &[ObjectRetainedRow], top: usize) {
             truncate(&row.class_name, 50),
             format_bytes(row.shallow_bytes),
             format_bytes(row.retained_bytes),
+        );
+    }
+    println!();
+}
+
+pub fn print_class_explanation(explanation: &crate::retained::ClassExplanation, top: usize) {
+    use crate::retained::ClassExplanation;
+    let ClassExplanation {
+        class_name,
+        instance_count,
+        total_shallow,
+        top_instances,
+        top_retainers,
+    } = explanation;
+
+    println!("=== Why is `{class_name}` using memory? ===");
+    println!(
+        "{} instances, {} total shallow",
+        instance_count,
+        format_bytes(*total_shallow)
+    );
+    println!(
+        "Note: for leaf types like arrays, retained size equals shallow size per instance."
+    );
+    println!(
+        "Incoming references show which object types directly point at these instances."
+    );
+    println!();
+
+    println!("=== Top {top} largest `{class_name}` instances ===");
+    println!(
+        "{:<6} {:>18} {:>12} {:<50} {:>18}",
+        "Rank", "Address", "Shallow", "Referenced from (class)", "Referrer address"
+    );
+    println!("{}", "-".repeat(112));
+    for (i, inst) in top_instances.iter().take(top).enumerate() {
+        let retainer_addr = if inst.retainer_addr == 0 {
+            "—".to_string()
+        } else {
+            format!("0x{:016x}", inst.retainer_addr)
+        };
+        println!(
+            "{:<6} 0x{:016x} {:>12} {:<50} {:>18}",
+            i + 1,
+            inst.addr,
+            format_bytes(inst.shallow_bytes),
+            truncate(&inst.retainer_class, 50),
+            retainer_addr,
+        );
+    }
+    println!();
+
+    println!("=== Top {top} classes with incoming refs to `{class_name}` ===");
+    println!(
+        "{:<6} {:<60} {:>12} {:>14}",
+        "Rank", "Retainer class", "Instances", "Shallow"
+    );
+    println!("{}", "-".repeat(96));
+    for (i, row) in top_retainers.iter().take(top).enumerate() {
+        println!(
+            "{:<6} {:<60} {:>12} {:>14}",
+            i + 1,
+            truncate(&row.retainer_class, 60),
+            row.instance_count,
+            format_bytes(row.shallow_bytes),
         );
     }
     println!();

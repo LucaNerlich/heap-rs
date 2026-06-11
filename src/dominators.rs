@@ -21,20 +21,21 @@ pub fn compute_dominators(graph: &ObjectGraph) -> Vec<u32> {
 
     let mut parent = vec![0u32; total];
     let mut semi = vec![0u32; total];
-    let mut vertex = vec![0u32; total];
+    // 1-based DFS numbering; vertex[0] is unused.
+    let mut vertex = vec![0u32; total + 1];
     let mut label = (0..total as u32).collect::<Vec<_>>();
     let mut idom = vec![0u32; total];
     let mut bucket: Vec<Vec<u32>> = vec![Vec::new(); total];
     let mut ancestor = vec![0u32; total];
     let mut dfnum = vec![0i32; total];
-    let mut next_df = 0i32;
+    let mut next_df = 1i32;
 
-    // Iterative DFS from super-root
+    // Iterative DFS from super-root (dfnum is 1-based; 0 means unvisited).
     let mut stack: Vec<(u32, usize)> = vec![(graph.super_root, 0)];
     dfnum[root] = next_df;
     next_df += 1;
     semi[root] = graph.super_root;
-    vertex[0] = graph.super_root;
+    vertex[1] = graph.super_root;
 
     while let Some((v, child_idx)) = stack.pop() {
         let children = if v == graph.super_root {
@@ -48,15 +49,20 @@ pub fn compute_dominators(graph: &ObjectGraph) -> Vec<u32> {
         if child_idx < children.len() {
             stack.push((v, child_idx + 1));
             let w = children[child_idx];
-            if dfnum[w as usize] == -1 {
+            if dfnum[w as usize] == 0 {
                 parent[w as usize] = v;
                 dfnum[w as usize] = next_df;
                 next_df += 1;
                 semi[w as usize] = w;
-                vertex[(dfnum[w as usize] - 1) as usize] = w;
+                vertex[dfnum[w as usize] as usize] = w;
                 stack.push((w, 0));
             }
         }
+    }
+
+    fn link(v: u32, w: u32, ancestor: &mut [u32], label: &mut [u32]) {
+        ancestor[w as usize] = v;
+        label[w as usize] = w;
     }
 
     fn compress(v: u32, ancestor: &mut [u32], label: &mut [u32], dfnum: &[i32]) {
@@ -85,11 +91,11 @@ pub fn compute_dominators(graph: &ObjectGraph) -> Vec<u32> {
         }
     }
 
-    for i in (1..next_df as usize).rev() {
+    for i in (2..next_df as usize).rev() {
         let w = vertex[i];
         let mut best = w;
         for &v in &preds[w as usize] {
-            if dfnum[v as usize] == -1 {
+            if dfnum[v as usize] == 0 {
                 continue;
             }
             let y = eval(v, &mut ancestor, &mut label, &dfnum);
@@ -101,9 +107,10 @@ pub fn compute_dominators(graph: &ObjectGraph) -> Vec<u32> {
         bucket[best as usize].push(w);
 
         let p = parent[w as usize];
+        link(p, w, &mut ancestor, &mut label);
         for &v in &bucket[p as usize] {
             let y = eval(v, &mut ancestor, &mut label, &dfnum);
-            idom[v as usize] = if semi[y as usize] < semi[v as usize] {
+            idom[v as usize] = if dfnum[semi[y as usize] as usize] < dfnum[semi[v as usize] as usize] {
                 y
             } else {
                 p
@@ -112,14 +119,14 @@ pub fn compute_dominators(graph: &ObjectGraph) -> Vec<u32> {
         bucket[p as usize].clear();
     }
 
-    for i in 1..next_df as usize {
+    for i in 2..next_df as usize {
         let w = vertex[i];
-        if idom[w as usize] != semi[w as usize] {
+        if semi[w as usize] != w && idom[w as usize] != semi[w as usize] {
             idom[w as usize] = idom[idom[w as usize] as usize];
         }
     }
 
-    idom[root] = root as u32;
+    idom[root] = graph.super_root;
 
     idom
 }
@@ -145,6 +152,9 @@ mod tests {
         let idom = compute_dominators(&graph);
         assert_eq!(idom.len(), 4);
         assert_eq!(idom[3], 3);
+        assert_eq!(idom[0], 3);
+        assert_eq!(idom[1], 0);
+        assert_eq!(idom[2], 1);
     }
 
     #[test]
@@ -156,8 +166,10 @@ mod tests {
         let index = crate::index::HeapIndex::build(&hprof, true).unwrap();
         let graph = ObjectGraph::build(&hprof, &index, true).unwrap();
         let idom = compute_dominators(&graph);
-
         assert_eq!(idom.len(), graph.num_nodes + 1);
         assert_eq!(idom[graph.super_root as usize], graph.super_root);
+        assert_eq!(idom[0], graph.super_root);
+        assert_eq!(idom[1], 0);
+        assert_eq!(idom[2], 1);
     }
 }

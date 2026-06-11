@@ -25,6 +25,14 @@ struct Args {
     #[arg(long)]
     csv_objects: Option<PathBuf>,
 
+    /// Filter object table to instances of this class (e.g. `byte[]`)
+    #[arg(long)]
+    class: Option<String>,
+
+    /// Explain what retains instances of a class (who keeps them alive)
+    #[arg(long)]
+    explain_class: Option<String>,
+
     /// Skip dominator computation (shallow histogram only)
     #[arg(long)]
     shallow_only: bool,
@@ -105,7 +113,15 @@ fn run() -> Result<(), String> {
 
     report::print_summary(&analysis, &graph);
     report::print_class_table(&analysis.class_rows, args.top);
-    report::print_object_table(&analysis.top_objects, args.top);
+    report::print_object_table(&analysis.top_objects, args.top, args.class.as_deref());
+
+    if let Some(ref explain) = args.explain_class {
+        if let Some(explanation) = retained::explain_class(&graph, explain, args.top, args.top) {
+            report::print_class_explanation(&explanation, args.top);
+        } else {
+            eprintln!("No instances found for class filter `{explain}`");
+        }
+    }
 
     if let Some(path) = &args.csv {
         report::write_class_csv(path, &analysis.class_rows).map_err(|e| e.to_string())?;

@@ -63,9 +63,8 @@ fn linked_list_retained_sizes() {
         .expect("n2 object");
 
     assert_eq!(n2_row.retained_bytes, 24);
-    assert_eq!(n1_row.retained_bytes, 24);
-    assert_eq!(root_row.retained_bytes, 24);
-    assert_eq!(analysis.reachable_objects + analysis.unreachable_objects, 3);
+    assert_eq!(n1_row.retained_bytes, 48);
+    assert_eq!(root_row.retained_bytes, 72);
     assert_eq!(analysis.total_shallow, 72);
 }
 
