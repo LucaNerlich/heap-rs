@@ -31,6 +31,11 @@ pub fn print_summary(analysis: &RetainedAnalysis, graph: &ObjectGraph) {
         analysis.total_shallow,
         format_bytes(analysis.total_shallow)
     );
+    println!(
+        "Largest retained subtree: {} ({})",
+        analysis.total_retained,
+        format_bytes(analysis.total_retained)
+    );
     println!();
 }
 

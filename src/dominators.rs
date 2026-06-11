@@ -85,21 +85,6 @@ pub fn compute_dominators(graph: &ObjectGraph) -> Vec<u32> {
         }
     }
 
-    fn link(v: u32, w: u32, ancestor: &mut [u32], label: &mut [u32], dfnum: &[i32]) {
-        let mut s = w;
-        loop {
-            compress(s, ancestor, label, dfnum);
-            if dfnum[label[s as usize] as usize] >= dfnum[label[v as usize] as usize] {
-                label[s as usize] = v;
-            }
-            if ancestor[s as usize] == 0 {
-                ancestor[s as usize] = v;
-                break;
-            }
-            s = ancestor[s as usize];
-        }
-    }
-
     for i in (1..next_df as usize).rev() {
         let w = vertex[i];
         let mut best = w;

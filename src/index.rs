@@ -3,9 +3,6 @@ use jvm_hprof::{Hprof, IdSize, RecordTag};
 use rustc_hash::FxHashMap;
 
 pub struct ClassLayout {
-    pub name: String,
-    pub super_class: Option<u64>,
-    pub instance_size: u32,
     pub fields: Vec<FieldType>,
 }
 
@@ -186,7 +183,7 @@ fn id_bytes(id_size: IdSize) -> u8 {
 fn build_class_layout(
     class_id: u64,
     raw: &FxHashMap<u64, (Option<u64>, u32, Vec<FieldType>)>,
-    names: &FxHashMap<u64, String>,
+    _names: &FxHashMap<u64, String>,
 ) -> ClassLayout {
     let mut chain = Vec::new();
     let mut cur = Some(class_id);
@@ -200,30 +197,14 @@ fn build_class_layout(
     }
 
     let mut fields = Vec::new();
-    let mut instance_size = 0u32;
-    let mut name = format!("0x{class_id:x}");
-    let mut super_class = None;
 
     for &cid in chain.iter().rev() {
-        if let Some((sup, sz, local)) = raw.get(&cid) {
-            if cid == class_id {
-                instance_size = *sz;
-                super_class = *sup;
-                name = names
-                    .get(&cid)
-                    .cloned()
-                    .unwrap_or_else(|| format!("0x{cid:x}"));
-            }
+        if let Some((_, _, local)) = raw.get(&cid) {
             fields.extend(local.iter().copied());
         }
     }
 
-    ClassLayout {
-        name,
-        super_class,
-        instance_size,
-        fields,
-    }
+    ClassLayout { fields }
 }
 
 fn class_name(class_id: u64, names: &FxHashMap<u64, String>) -> String {
