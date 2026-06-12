@@ -1,3 +1,11 @@
+//! The object reference graph.
+//!
+//! [`ObjectGraph`](crate::graph::ObjectGraph) stores nodes (objects) and directed edges (references) in
+//! [compressed-sparse-row](https://en.wikipedia.org/wiki/Sparse_matrix#Compressed_sparse_row_(CSR,_CRS_or_Yale_format))
+//! form. Objects are identified by a dense node id `0..num_nodes`, assigned by
+//! sorting addresses, so the heavy graph algorithms operate on small contiguous
+//! integer arrays rather than 64-bit addresses.
+
 use crate::index::HeapIndex;
 use crate::progress::{format_count, ProgressGroup};
 use jvm_hprof::heap_dump::SubRecord;
@@ -6,19 +14,49 @@ use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::time::Instant;
 
+/// The object reference graph in compressed-sparse-row (CSR) form.
+///
+/// Each object is a node identified by a dense id in `0..num_nodes`, assigned by
+/// sorting addresses ascending. The per-node arrays ([`addrs`](Self::addrs),
+/// [`shallow`](Self::shallow), [`object_class`](Self::object_class)) are indexed
+/// by that id. Edges are stored as CSR: the outgoing edges of node `v` are
+/// `targets[offsets[v]..offsets[v + 1]]`.
+///
+/// [`super_root`](Self::super_root) (`= num_nodes`) is a synthetic node that
+/// points at every GC root, giving dominator analysis a single entry point.
 pub struct ObjectGraph {
+    /// Object addresses, sorted ascending; `addrs[id]` is node `id`'s address.
     pub addrs: Vec<u64>,
+    /// Shallow size in bytes per node.
     pub shallow: Vec<u32>,
+    /// Interned class names; indexed by the values in [`object_class`](Self::object_class).
     pub class_names: Vec<String>,
+    /// Class index per node, pointing into [`class_names`](Self::class_names).
     pub object_class: Vec<u32>,
+    /// CSR row offsets; node `v`'s edges span `offsets[v]..offsets[v + 1]`. Length is `num_nodes + 1`.
     pub offsets: Vec<u32>,
+    /// CSR edge targets (destination node ids), concatenated per source node.
     pub targets: Vec<u32>,
+    /// GC root node ids, sorted and deduplicated.
     pub roots: Vec<u32>,
+    /// Number of real object nodes (excludes the synthetic super-root).
     pub num_nodes: usize,
+    /// Id of the synthetic super-root node (`= num_nodes`) that links to all GC roots.
     pub super_root: u32,
 }
 
 impl ObjectGraph {
+    /// Build the CSR object graph from a parsed dump and its [`HeapIndex`].
+    ///
+    /// Sorts object addresses to assign dense node ids, maps per-object
+    /// metadata, then scans the heap once to collect edges before sorting them
+    /// into CSR layout. Address mapping, sorting, and CSR fill run in parallel.
+    ///
+    /// Set `quiet` to `true` to suppress progress spinners.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `Err(String)` if a heap record fails to parse.
     pub fn build(hprof: &Hprof<'_>, index: &HeapIndex, quiet: bool) -> Result<Self, String> {
         let n = index.objects.len();
         let started = Instant::now();
@@ -159,6 +197,12 @@ impl ObjectGraph {
         })
     }
 
+    /// Aggregate shallow size by class, sorted by total bytes descending.
+    ///
+    /// Returns one `(class_name, instance_count, shallow_bytes)` tuple per
+    /// class. This is a cheap summary that does not require the dominator tree,
+    /// so it can be produced in `--shallow-only` mode. The counting is
+    /// parallelized with a per-thread fold/reduce.
     pub fn shallow_histogram(&self) -> Vec<(String, u64, u64)> {
         let k = self.class_names.len();
         if k == 0 {

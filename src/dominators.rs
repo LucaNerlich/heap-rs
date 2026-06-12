@@ -1,7 +1,31 @@
+//! Dominator-tree computation.
+//!
+//! A node `d` *dominates* node `v` if every path from the (super-)root to `v`
+//! passes through `d`. The *immediate dominator* of `v` is the closest such
+//! `d`. The dominator tree is the backbone of retained-size analysis: the
+//! retained set of an object is exactly the subtree it dominates.
+//!
+//! [`compute_dominators`](crate::dominators::compute_dominators) implements the
+//! classic
+//! [Lengauer–Tarjan](https://en.wikipedia.org/wiki/Dominator_(graph_theory))
+//! algorithm with an iterative depth-first search (to avoid stack overflow on
+//! deep heaps) and path compression.
+
 use crate::graph::ObjectGraph;
 
-/// Compute immediate dominators using Lengauer-Tarjan with an iterative DFS.
-/// Returns idom[v] for each node v in 0..=super_root (inclusive).
+/// Compute the immediate dominator of every node using Lengauer–Tarjan.
+///
+/// The graph's synthetic [`super_root`](ObjectGraph::super_root) is used as the
+/// single start node, so all GC roots and everything reachable from them are
+/// covered by one tree.
+///
+/// Returns a vector `idom` of length `num_nodes + 1` where `idom[v]` is the
+/// node id of `v`'s immediate dominator. The super-root is its own dominator.
+/// Unreachable nodes keep their default entry and are treated as not dominated
+/// by any real object during retained accumulation.
+///
+/// The traversal is iterative, so it is safe on very deep object chains where a
+/// recursive DFS would overflow the stack.
 pub fn compute_dominators(graph: &ObjectGraph) -> Vec<u32> {
     let n = graph.num_nodes;
     let root = graph.super_root as usize;

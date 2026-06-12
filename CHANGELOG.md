@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-06-12
+
+### Changed
+
+- Added extensive rustdoc across the public API and modules so the generated docs.rs documentation is fully populated
+
 ## [1.1.0] - 2026-06-11
 
 ### Added

@@ -1,60 +1,121 @@
+//! Retained-size aggregation and class retainer analysis.
+//!
+//! Given an [`ObjectGraph`](crate::graph::ObjectGraph),
+//! [`compute_retained`](crate::retained::compute_retained) builds the dominator
+//! tree, sums each object's retained size (its shallow size plus everything it
+//! dominates), and rolls the totals up per class.
+//! [`explain_class`](crate::retained::explain_class) answers the complementary
+//! question — *who references instances of a given class?* — which is what you
+//! reach for when a leaf type such as `byte[]` dominates the heap.
+
 use crate::dominators::compute_dominators;
 use crate::graph::ObjectGraph;
 use crate::progress::ProgressGroup;
 use rayon::prelude::*;
 
+/// One row of the per-class retained-size table.
 pub struct ClassRetainedRow {
+    /// Fully qualified class name.
     pub class_name: String,
+    /// Number of live instances of this class.
     pub instance_count: u64,
+    /// Summed shallow size of all instances.
     pub shallow_bytes: u64,
+    /// Summed retained size of all instances.
     pub retained_bytes: u64,
 }
 
+/// One row of the per-object retained-size table.
 pub struct ObjectRetainedRow {
+    /// Object address (identity) in the dump.
     pub addr: u64,
+    /// Class name of this object.
     pub class_name: String,
+    /// Shallow size of this object.
     pub shallow_bytes: u64,
+    /// Retained size of this object (shallow plus everything it dominates).
     pub retained_bytes: u64,
 }
 
+/// The full result of [`compute_retained`].
 pub struct RetainedAnalysis {
+    /// Per-class rows, sorted by retained size descending.
     pub class_rows: Vec<ClassRetainedRow>,
+    /// Per-object rows, sorted by retained size descending.
     pub top_objects: Vec<ObjectRetainedRow>,
+    /// Sum of all shallow sizes in the heap.
     pub total_shallow: u64,
+    /// Largest single retained subtree (the heaviest dominator).
     pub total_retained: u64,
+    /// Count of objects reachable from a GC root.
     pub reachable_objects: u64,
+    /// Count of objects not reachable from any GC root.
     pub unreachable_objects: u64,
+    /// Immediate-dominator array as returned by [`compute_dominators`].
     pub idom: Vec<u32>,
 }
 
+/// A class that holds incoming references to the target class, with totals.
 pub struct RetainerRow {
+    /// Class name of the referring (retaining) objects.
     pub retainer_class: String,
+    /// Number of references from this class to instances of the target class.
     pub instance_count: u64,
+    /// Summed shallow size of the referenced target instances.
     pub shallow_bytes: u64,
 }
 
+/// A single instance of the target class, with a representative referrer.
 #[derive(Clone)]
 pub struct ExplainedInstance {
+    /// Address of this instance.
     pub addr: u64,
+    /// Shallow size of this instance.
     pub shallow_bytes: u64,
+    /// Class name of a representative object that references this instance
+    /// (the shallowest predecessor), or `"GC root"` / `"(no incoming refs)"`.
     pub retainer_class: String,
+    /// Address of the representative referrer, or `0` when there is none.
     pub retainer_addr: u64,
 }
 
+/// The result of [`explain_class`]: why a class occupies memory.
 pub struct ClassExplanation {
+    /// The resolved fully qualified class name.
     pub class_name: String,
+    /// Number of matched instances.
     pub instance_count: u64,
+    /// Summed shallow size of matched instances.
     pub total_shallow: u64,
+    /// Largest matched instances, sorted by shallow size descending.
     pub top_instances: Vec<ExplainedInstance>,
+    /// Classes that reference the matched instances, sorted by shallow size descending.
     pub top_retainers: Vec<RetainerRow>,
 }
 
+/// Test whether a class name matches a user-supplied filter.
+///
+/// A match occurs when the filter equals the full class name, equals the
+/// segment after the last `/` (so `HashMap` matches `java/util/HashMap`), or is
+/// an exact array-type match such as `byte[]`.
 pub fn class_matches(class_name: &str, filter: &str) -> bool {
     class_name == filter
         || class_name.ends_with(&format!("/{filter}"))
         || (filter.ends_with("[]") && class_name == filter)
 }
 
+/// Explain which objects reference instances of `class_filter`.
+///
+/// This walks **incoming** references (predecessors) rather than the dominator
+/// tree, which is what you want for leaf types like `byte[]` where retained
+/// size equals shallow size and the interesting question is *who keeps these
+/// alive*. For each matched instance the shallowest predecessor is recorded as
+/// a representative retainer, and referrers are aggregated by class.
+///
+/// `top_instances` and `top_retainers` cap the number of rows returned in
+/// [`ClassExplanation::top_instances`] and [`ClassExplanation::top_retainers`].
+///
+/// Returns `None` if no object matches the filter.
 pub fn explain_class(
     graph: &ObjectGraph,
     class_filter: &str,
@@ -176,6 +237,15 @@ pub fn explain_class(
     })
 }
 
+/// Compute retained sizes for every object and aggregate them per class.
+///
+/// Builds the dominator tree via [`compute_dominators`], accumulates each
+/// object's retained size bottom-up (deepest dominator-tree level first, in
+/// parallel within each level), then aggregates per-class totals and reachable
+/// / unreachable counts. The returned [`RetainedAnalysis`] has both the
+/// per-class and per-object rows sorted by retained size descending.
+///
+/// Set `quiet` to `true` to suppress progress spinners.
 pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
     let group = ProgressGroup::new("Computing retained sizes", 3, quiet);
 

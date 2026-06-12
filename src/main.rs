@@ -1,3 +1,9 @@
+//! Command-line entry point for `heap-rs`.
+//!
+//! Parses CLI arguments, memory-maps the dump, and drives the analysis pipeline
+//! exposed by the [`heap_rs`] library. See the library crate docs for the API
+//! used here.
+
 use clap::Parser;
 use heap_rs::{graph, index, report, retained};
 use jvm_hprof::parse_hprof;

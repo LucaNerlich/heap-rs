@@ -1,20 +1,38 @@
+//! Live progress reporting shared across analysis phases.
+//!
+//! A [`ProgressGroup`](crate::progress::ProgressGroup) represents a multi-step
+//! phase (for example "Building object graph" with 4 steps). Each step is a
+//! [`PhaseProgress`](crate::progress::PhaseProgress) spinner that accumulates
+//! [`Counters`](crate::progress::Counters) (objects, edges, nodes, …) and
+//! refreshes on a timer. In `quiet` mode every spinner is inert, so the same
+//! calling code works for both interactive and CI/log output.
+
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::{Duration, Instant};
 
 const UPDATE_INTERVAL: Duration = Duration::from_secs(2);
 const UPDATE_EVERY: u64 = 5_000_000;
 
+/// Running tallies displayed by a [`PhaseProgress`] spinner.
 #[derive(Default, Clone)]
 pub struct Counters {
+    /// Heap sub-records processed.
     pub sub_records: u64,
+    /// Heap dump segments processed.
     pub segments: u64,
+    /// Objects (instances and arrays) seen.
     pub objects: u64,
+    /// Class dumps seen.
     pub classes: u64,
+    /// GC roots seen.
     pub roots: u64,
+    /// Graph edges processed.
     pub edges: u64,
+    /// Generic work units (e.g. nodes finalized).
     pub nodes: u64,
 }
 
+/// A multi-step analysis phase that hands out per-step [`PhaseProgress`] spinners.
 pub struct ProgressGroup {
     phase: String,
     total_steps: u32,
@@ -22,6 +40,9 @@ pub struct ProgressGroup {
 }
 
 impl ProgressGroup {
+    /// Create a progress group for a named `phase` with `total_steps` steps.
+    ///
+    /// When `quiet` is `true`, all spinners produced by this group are inert.
     pub fn new(phase: impl Into<String>, total_steps: u32, quiet: bool) -> Self {
         Self {
             phase: phase.into(),
@@ -30,6 +51,7 @@ impl ProgressGroup {
         }
     }
 
+    /// Begin step `step` of this group, labelled `name`, returning its spinner.
     pub fn begin(&self, step: u32, name: impl Into<String>) -> PhaseProgress {
         PhaseProgress::subtask(
             self.phase.clone(),
@@ -41,6 +63,8 @@ impl ProgressGroup {
     }
 }
 
+/// A single-step progress spinner that accumulates [`Counters`] and refreshes
+/// on a timer. Obtain one from [`ProgressGroup::begin`].
 pub struct PhaseProgress {
     bar: ProgressBar,
     group_phase: String,
@@ -101,33 +125,40 @@ impl PhaseProgress {
         progress
     }
 
+    /// Increment the sub-record counter and refresh the display if due.
     pub fn tick_sub_record(&mut self) {
         self.counters.sub_records += 1;
         self.maybe_refresh();
     }
 
+    /// Increment the segment counter.
     pub fn tick_segment(&mut self) {
         self.counters.segments += 1;
     }
 
+    /// Increment the object counter and refresh the display if due.
     pub fn add_object(&mut self) {
         self.counters.objects += 1;
         self.maybe_refresh();
     }
 
+    /// Increment the class counter.
     pub fn add_class(&mut self) {
         self.counters.classes += 1;
     }
 
+    /// Increment the GC-root counter.
     pub fn add_root(&mut self) {
         self.counters.roots += 1;
     }
 
+    /// Add `n` to the edge counter and refresh the display if due.
     pub fn add_edges(&mut self, n: u64) {
         self.counters.edges += n;
         self.maybe_refresh();
     }
 
+    /// Add `n` to the generic node/work counter and refresh the display if due.
     pub fn add_nodes(&mut self, n: u64) {
         self.counters.nodes += n;
         self.maybe_refresh();
@@ -197,6 +228,9 @@ impl PhaseProgress {
         parts.join(" | ")
     }
 
+    /// Finish this step, replacing the spinner with a one-line `summary`.
+    ///
+    /// No-op in quiet mode.
     pub fn finish(&self, summary: impl Into<String>) {
         if self.quiet {
             return;

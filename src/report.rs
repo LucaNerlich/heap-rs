@@ -1,8 +1,20 @@
+//! Terminal tables and CSV export.
+//!
+//! These helpers render the results of [`crate::retained::compute_retained`] and
+//! [`crate::retained::explain_class`] as aligned terminal tables, and write the
+//! per-class and per-object breakdowns to CSV for further analysis in a
+//! spreadsheet.
+
 use crate::graph::ObjectGraph;
 use crate::retained::{ClassRetainedRow, ObjectRetainedRow, RetainedAnalysis};
 use std::io;
 use std::path::Path;
 
+/// Format a byte count using binary (1024-based) units: `B`, `KB`, `MB`, `GB`.
+///
+/// ```
+/// assert_eq!(heap_rs::report::format_bytes(2048), "2.00 KB");
+/// ```
 pub fn format_bytes(n: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -18,6 +30,8 @@ pub fn format_bytes(n: u64) -> String {
     }
 }
 
+/// Print the heap summary: object count, GC roots, reachable/unreachable
+/// counts, total shallow size, and the largest retained subtree.
 pub fn print_summary(analysis: &RetainedAnalysis, graph: &ObjectGraph) {
     println!("=== Heap Summary ===");
     println!("Objects: {}", graph.num_nodes);
@@ -39,6 +53,7 @@ pub fn print_summary(analysis: &RetainedAnalysis, graph: &ObjectGraph) {
     println!();
 }
 
+/// Print the top `top` classes ranked by retained size.
 pub fn print_class_table(rows: &[ClassRetainedRow], top: usize) {
     println!("=== Top {top} Classes by Retained Size ===");
     println!(
@@ -59,6 +74,10 @@ pub fn print_class_table(rows: &[ClassRetainedRow], top: usize) {
     println!();
 }
 
+/// Print the top `top` objects ranked by retained size.
+///
+/// When `class_filter` is `Some`, only objects whose class matches the filter
+/// (see [`crate::retained::class_matches`]) are shown.
 pub fn print_object_table(rows: &[ObjectRetainedRow], top: usize, class_filter: Option<&str>) {
     let filtered: Vec<_> = match class_filter {
         Some(f) => rows
@@ -90,6 +109,8 @@ pub fn print_object_table(rows: &[ObjectRetainedRow], top: usize, class_filter: 
     println!();
 }
 
+/// Print a [`ClassExplanation`](crate::retained::ClassExplanation): the largest
+/// matched instances and the classes that reference them, capped at `top` rows.
 pub fn print_class_explanation(explanation: &crate::retained::ClassExplanation, top: usize) {
     use crate::retained::ClassExplanation;
     let ClassExplanation {
@@ -155,6 +176,10 @@ pub fn print_class_explanation(explanation: &crate::retained::ClassExplanation, 
     println!();
 }
 
+/// Print the top `top` classes by shallow size.
+///
+/// This is the cheap checkpoint table that does not need the dominator tree; it
+/// is shown in every mode, including `--shallow-only`.
 pub fn print_shallow_histogram(graph: &ObjectGraph, top: usize) {
     let rows = graph.shallow_histogram();
     println!("=== Top {top} Classes by Shallow Size (checkpoint) ===");
@@ -172,6 +197,13 @@ pub fn print_shallow_histogram(graph: &ObjectGraph, top: usize) {
     println!();
 }
 
+/// Write the per-class breakdown to a CSV file.
+///
+/// Columns: `class,instances,shallow_bytes,retained_bytes`.
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] if the file cannot be created or written.
 pub fn write_class_csv(path: &Path, rows: &[ClassRetainedRow]) -> io::Result<()> {
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record(["class", "instances", "shallow_bytes", "retained_bytes"])?;
@@ -187,6 +219,14 @@ pub fn write_class_csv(path: &Path, rows: &[ClassRetainedRow]) -> io::Result<()>
     Ok(())
 }
 
+/// Write the per-object breakdown to a CSV file.
+///
+/// Columns: `address,class,shallow_bytes,retained_bytes`. When `limit` is
+/// `Some(n)`, only the first `n` rows are written; otherwise all rows are.
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] if the file cannot be created or written.
 pub fn write_object_csv(path: &Path, rows: &[ObjectRetainedRow], limit: Option<usize>) -> io::Result<()> {
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record(["address", "class", "shallow_bytes", "retained_bytes"])?;

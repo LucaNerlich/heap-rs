@@ -1,6 +1,6 @@
 [package]
 name = "heap-rs"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Fast CLI for analyzing Java .hprof heap dumps with retained sizes and retainer analysis"

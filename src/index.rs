@@ -1,3 +1,11 @@
+//! First-pass heap indexing.
+//!
+//! [`HeapIndex::build`](crate::index::HeapIndex::build) walks the entire dump
+//! once to collect every object's address, shallow size, and class name, the
+//! field layout of each class (flattened across its superclass chain), and the
+//! set of GC roots. The resulting [`HeapIndex`](crate::index::HeapIndex) is the
+//! input to [`crate::graph::ObjectGraph::build`].
+
 use crate::progress::ProgressGroup;
 use jvm_hprof::heap_dump::{FieldType, FieldValue, Instance, PrimitiveArrayType, SubRecord};
 use jvm_hprof::{Hprof, IdSize, RecordTag};
@@ -5,24 +13,56 @@ use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::time::Instant;
 
+/// The instance field layout of a class, flattened across its superclass chain.
+///
+/// Fields are ordered from the topmost ancestor down to the class itself, which
+/// matches the on-wire order of an instance's field bytes in the dump. This lets
+/// [`HeapIndex::extract_refs`] decode reference fields by walking the bytes in
+/// declaration order.
 pub struct ClassLayout {
+    /// Field types in declaration order (superclass fields first).
     pub fields: Vec<FieldType>,
 }
 
+/// Per-object metadata captured during the first pass.
 pub struct ObjectMeta {
+    /// The object's address (identity) in the dump.
     pub addr: u64,
+    /// Shallow size in bytes (the object's own storage, excluding referenced objects).
     pub shallow: u32,
+    /// Fully qualified class name (e.g. `java/util/HashMap` or `byte[]`).
     pub class_name: String,
 }
 
+/// The result of the first pass over a heap dump.
+///
+/// Holds everything needed to build the object reference graph: object
+/// metadata, class field layouts, and the GC root set. Build one with
+/// [`HeapIndex::build`].
 pub struct HeapIndex {
+    /// Identifier size used by this dump (4 or 8 bytes).
     pub id_size: IdSize,
+    /// Class field layouts keyed by class object id.
     pub classes: FxHashMap<u64, ClassLayout>,
+    /// All live objects (instances and arrays) found in the dump.
     pub objects: Vec<ObjectMeta>,
+    /// GC root object addresses, sorted and deduplicated.
     pub roots: Vec<u64>,
 }
 
 impl HeapIndex {
+    /// Build the index by scanning the dump once.
+    ///
+    /// Reads UTF-8 symbols and class loads, then walks the heap dump segments
+    /// to record objects, arrays, class dumps, and GC roots. Class field
+    /// layouts are finalized in parallel after the scan.
+    ///
+    /// Set `quiet` to `true` to suppress live progress spinners (useful in CI
+    /// or when capturing logs).
+    ///
+    /// # Errors
+    ///
+    /// Returns an `Err(String)` if a record fails to parse.
     pub fn build(hprof: &Hprof<'_>, quiet: bool) -> Result<Self, String> {
         let id_size = hprof.header().id_size();
         let group = ProgressGroup::new("Pass 1: indexing heap", 3, quiet);
@@ -233,6 +273,17 @@ impl HeapIndex {
         })
     }
 
+    /// Extract the outgoing object references of a single heap sub-record.
+    ///
+    /// For an instance, the field bytes are decoded using the class's
+    /// [`ClassLayout`] and every non-null object-reference field is returned.
+    /// For an object array, every non-null element is returned. All other
+    /// sub-records (primitive arrays, class dumps, roots) have no outgoing
+    /// object references and yield an empty vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `Err(String)` if a field value or array element fails to parse.
     pub fn extract_refs(&self, sub: &SubRecord<'_>) -> Result<Vec<u64>, String> {
         let id_size = self.id_size;
         match sub {
