@@ -11,6 +11,40 @@ A fast CLI tool for analyzing Java `.hprof` heap dumps. It reports **per-class m
 
 Supported dump format: **JAVA PROFILE 1.0.2** (standard HotSpot / OpenJDK output, including segmented `HEAP_DUMP_SEGMENT` records).
 
+## Installation
+
+### From [crates.io](https://crates.io/crates/heap-rs) (recommended)
+
+If you have [Rust](https://rustup.rs/) 1.85 or newer:
+
+```bash
+cargo install heap-rs
+```
+
+Then run from anywhere:
+
+```bash
+heap-rs --file heap.hprof --top 50
+```
+
+To upgrade after a new release:
+
+```bash
+cargo install heap-rs --force
+```
+
+### From source
+
+Clone the repository and build locally:
+
+```bash
+git clone https://github.com/LucaNerlich/heap-rs.git
+cd heap-rs
+cargo build --release
+```
+
+The binary is at `target/release/heap-rs`. See [Build & run with Cargo](#build--run-with-cargo) for `cargo run`, `cargo install --path .`, and other workflows.
+
 ## Build & run with Cargo
 
 From the project root:
@@ -47,7 +81,9 @@ Or invoke the built binary directly:
 ./target/release/heap-rs --file heap.hprof --top 50
 ```
 
-### Install onto your PATH
+### Install from a local checkout
+
+When developing or building from a git clone:
 
 ```bash
 cargo install --path .
@@ -59,23 +95,11 @@ Then run from anywhere:
 heap-rs --file heap.hprof --csv classes.csv
 ```
 
-To reinstall after pulling changes:
+To reinstall after local changes:
 
 ```bash
 cargo install --path . --force
 ```
-
-## Installation
-
-If you do not have Rust yet, install it from [rustup.rs](https://rustup.rs/), then clone and build:
-
-```bash
-git clone <repo-url>
-cd heap-rs
-cargo build --release
-```
-
-See [Build & run with Cargo](#build--run-with-cargo) for `cargo run`, `cargo install`, and other workflows.
 
 ## Capturing a heap dump
 
