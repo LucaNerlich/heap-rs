@@ -90,14 +90,21 @@ pub fn compute_dominators(graph: &ObjectGraph) -> Vec<u32> {
     }
 
     fn compress(v: u32, ancestor: &mut [u32], label: &mut [u32], dfnum: &[i32]) {
-        if ancestor[v as usize] != 0 {
-            compress(ancestor[v as usize], ancestor, label, dfnum);
-            if dfnum[label[ancestor[v as usize] as usize] as usize]
-                < dfnum[label[v as usize] as usize]
-            {
-                label[v as usize] = label[ancestor[v as usize] as usize];
+        // Collect the chain from v upward until we reach a root (ancestor == 0).
+        let mut chain = vec![v];
+        let mut cur = v;
+        while ancestor[cur as usize] != 0 {
+            cur = ancestor[cur as usize];
+            chain.push(cur);
+        }
+        // Walk back down (from ancestor toward v) applying path compression.
+        for i in (0..chain.len().saturating_sub(1)).rev() {
+            let x = chain[i];
+            let anc = ancestor[x as usize];
+            if dfnum[label[anc as usize] as usize] < dfnum[label[x as usize] as usize] {
+                label[x as usize] = label[anc as usize];
             }
-            ancestor[v as usize] = ancestor[ancestor[v as usize] as usize];
+            ancestor[x as usize] = ancestor[anc as usize];
         }
     }
 
@@ -195,5 +202,35 @@ mod tests {
         assert_eq!(idom[0], graph.super_root);
         assert_eq!(idom[1], 0);
         assert_eq!(idom[2], 1);
+    }
+
+    #[test]
+    fn compress_does_not_overflow_on_deep_chain() {
+        let n = 100_000usize;
+        let mut offsets = vec![0u32; n + 1];
+        let mut targets = vec![0u32; n - 1];
+        for i in 0..n - 1 {
+            offsets[i] = i as u32;
+            targets[i] = (i + 1) as u32;
+        }
+        offsets[n - 1] = (n - 1) as u32;
+        offsets[n] = (n - 1) as u32;
+        let graph = ObjectGraph {
+            addrs: (0..n as u64).collect(),
+            shallow: vec![8u32; n],
+            class_names: vec!["Node".into()],
+            object_class: vec![0u32; n],
+            offsets,
+            targets,
+            roots: vec![0],
+            num_nodes: n,
+            super_root: n as u32,
+        };
+        let idom = compute_dominators(&graph);
+        assert_eq!(idom.len(), n + 1);
+        assert_eq!(idom[0], n as u32);
+        for i in 1..n {
+            assert_eq!(idom[i], (i - 1) as u32, "idom[{i}] should be {}", i - 1);
+        }
     }
 }

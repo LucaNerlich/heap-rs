@@ -99,9 +99,7 @@ pub struct ClassExplanation {
 /// segment after the last `/` (so `HashMap` matches `java/util/HashMap`), or is
 /// an exact array-type match such as `byte[]`.
 pub fn class_matches(class_name: &str, filter: &str) -> bool {
-    class_name == filter
-        || class_name.ends_with(&format!("/{filter}"))
-        || (filter.ends_with("[]") && class_name == filter)
+    class_name == filter || class_name.ends_with(&format!("/{filter}"))
 }
 
 /// Explain which objects reference instances of `class_filter`.
