@@ -244,11 +244,15 @@ pub fn write_object_csv(path: &Path, rows: &[ObjectRetainedRow], limit: Option<u
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max.saturating_sub(1)])
+    if s.chars().count() <= max {
+        return s.to_string();
     }
+    let cutoff = s
+        .char_indices()
+        .nth(max.saturating_sub(1))
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    format!("{}…", &s[..cutoff])
 }
 
 #[cfg(test)]
@@ -314,5 +318,21 @@ mod tests {
         let truncated = truncate(&long, 60);
         assert!(truncated.ends_with('…'));
         assert!(truncated.chars().count() <= 60);
+    }
+
+    #[test]
+    fn truncate_handles_multibyte_chars() {
+        // Each '日' is 3 bytes in UTF-8; a 30-char string is 90 bytes.
+        let s = "日".repeat(30);
+        let truncated = truncate(&s, 20);
+        assert!(truncated.ends_with('…'));
+        assert!(truncated.chars().count() <= 20);
+        // The slice must not panic — this was the bug.
+    }
+
+    #[test]
+    fn truncate_short_string_is_unchanged() {
+        let s = "こんにちは".to_string(); // 5 chars, 15 bytes
+        assert_eq!(truncate(&s, 10), s);
     }
 }
