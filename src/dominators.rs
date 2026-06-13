@@ -225,7 +225,7 @@ mod tests {
         offsets[n] = (n - 1) as u32;
         let graph = ObjectGraph {
             addrs: (0..n as u64).collect(),
-            shallow: vec![8u32; n],
+            shallow: vec![8u64; n],
             class_names: vec!["Node".into()],
             object_class: vec![0u32; n],
             offsets,

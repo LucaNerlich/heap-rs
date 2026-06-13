@@ -139,7 +139,7 @@ pub fn explain_class(
             if !class_matches(name, class_filter) {
                 return None;
             }
-            let shallow = graph.shallow[v] as u64;
+            let shallow = graph.shallow[v];
 
             let (retainer_class, retainer_addr) = if preds[v].is_empty() {
                 ("(no incoming refs)".to_string(), 0)
@@ -289,7 +289,7 @@ pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
         let updates: Vec<(usize, u64)> = nodes_at_depth
             .par_iter()
             .map(|&v| {
-                let mut sum = graph.shallow[v] as u64;
+                let mut sum = graph.shallow[v];
                 for &c in &dom_children[v] {
                     sum += retained[c as usize];
                 }
@@ -324,10 +324,10 @@ pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
                     )
                 },
                 |mut acc, v| {
-                    acc.5 += graph.shallow[v] as u64;
+                    acc.5 += graph.shallow[v];
                     let c = graph.object_class[v] as usize;
                     acc.0[c] += 1;
-                    acc.1[c] += graph.shallow[v] as u64;
+                    acc.1[c] += graph.shallow[v];
                     acc.2[c] += retained[v];
                     if depth[v] > 0 {
                         acc.3 += 1;
@@ -379,7 +379,7 @@ pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
         .map(|v| ObjectRetainedRow {
             addr: graph.addrs[v],
             class_name: graph.class_names[graph.object_class[v] as usize].clone(),
-            shallow_bytes: graph.shallow[v] as u64,
+            shallow_bytes: graph.shallow[v],
             retained_bytes: retained[v],
         })
         .collect();
@@ -483,7 +483,7 @@ mod tests {
         offsets[n] = (n - 1) as u32;
         let graph = crate::graph::ObjectGraph {
             addrs: (0..n as u64).collect(),
-            shallow: vec![8u32; n],
+            shallow: vec![8u64; n],
             class_names: vec!["Node".into()],
             object_class: vec![0u32; n],
             offsets,

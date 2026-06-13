@@ -216,7 +216,7 @@ impl ObjectGraph {
                 |mut acc, i| {
                     let c = self.object_class[i] as usize;
                     acc.0[c] += 1;
-                    acc.1[c] += self.shallow[i] as u64;
+                    acc.1[c] += self.shallow[i];
                     acc
                 },
             )
