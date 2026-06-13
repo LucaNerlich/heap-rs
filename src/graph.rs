@@ -28,7 +28,7 @@ pub struct ObjectGraph {
     /// Object addresses, sorted ascending; `addrs[id]` is node `id`'s address.
     pub addrs: Vec<u64>,
     /// Shallow size in bytes per node.
-    pub shallow: Vec<u32>,
+    pub shallow: Vec<u64>,
     /// Interned class names; indexed by the values in [`object_class`](Self::object_class).
     pub class_names: Vec<String>,
     /// Class index per node, pointing into [`class_names`](Self::class_names).
@@ -86,9 +86,9 @@ impl ObjectGraph {
                 });
         }
 
-        let mut shallow = vec![0u32; n];
+        let mut shallow = vec![0u64; n];
         let mut object_class = vec![0u32; n];
-        let metadata: Vec<(usize, u32, u32)> = index
+        let metadata: Vec<(usize, u64, u32)> = index
             .objects
             .par_iter()
             .map(|obj| {

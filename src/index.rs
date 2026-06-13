@@ -29,7 +29,7 @@ pub struct ObjectMeta {
     /// The object's address (identity) in the dump.
     pub addr: u64,
     /// Shallow size in bytes (the object's own storage, excluding referenced objects).
-    pub shallow: u32,
+    pub shallow: u64,
     /// Fully qualified class name (e.g. `java/util/HashMap` or `byte[]`).
     pub class_name: String,
 }
@@ -147,8 +147,8 @@ impl HeapIndex {
                                 let name = class_name(class_id, &load_class_names);
                                 let shallow = raw_classes
                                     .get(&class_id)
-                                    .map(|(_, sz, _)| *sz)
-                                    .unwrap_or(inst.fields().len() as u32);
+                                    .map(|(_, sz, _)| *sz as u64)
+                                    .unwrap_or(inst.fields().len() as u64);
                                 objects.push(ObjectMeta {
                                     addr: inst.obj_id().id(),
                                     shallow,
@@ -387,10 +387,10 @@ fn primitive_array_len(arr: &jvm_hprof::heap_dump::PrimitiveArray<'_>) -> u32 {
     0
 }
 
-fn array_shallow(num_elements: u32, elem_size: u8) -> u32 {
+fn array_shallow(num_elements: u32, elem_size: u8) -> u64 {
     let payload = num_elements as u64 * elem_size as u64;
     let total = 16u64 + payload;
-    ((total + 7) & !7) as u32
+    (total + 7) & !7
 }
 
 fn instance_refs(
@@ -457,5 +457,22 @@ mod tests {
             }
         }
         panic!("root instance not found");
+    }
+
+    #[test]
+    fn array_shallow_does_not_overflow_for_large_long_array() {
+        // 600_000 longs = 600_000 * 8 = 4_800_000 bytes payload
+        // + 16-byte header, aligned to 8 = 4_800_016 bytes
+        let shallow = super::array_shallow(600_000, 8);
+        assert_eq!(shallow, 4_800_016u64);
+    }
+
+    #[test]
+    fn array_shallow_max_int_array_no_overflow() {
+        // i32::MAX elements of 4 bytes each = 8_589_934_588 bytes payload > u32::MAX
+        let shallow = super::array_shallow(i32::MAX as u32, 4);
+        let expected = (16u64 + i32::MAX as u64 * 4 + 7) & !7;
+        assert_eq!(shallow, expected);
+        assert!(shallow > u32::MAX as u64, "should exceed u32::MAX");
     }
 }
