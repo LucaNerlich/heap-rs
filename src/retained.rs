@@ -99,9 +99,7 @@ pub struct ClassExplanation {
 /// segment after the last `/` (so `HashMap` matches `java/util/HashMap`), or is
 /// an exact array-type match such as `byte[]`.
 pub fn class_matches(class_name: &str, filter: &str) -> bool {
-    class_name == filter
-        || class_name.ends_with(&format!("/{filter}"))
-        || (filter.ends_with("[]") && class_name == filter)
+    class_name == filter || class_name.ends_with(&format!("/{filter}"))
 }
 
 /// Explain which objects reference instances of `class_filter`.
@@ -277,9 +275,17 @@ pub fn compute_retained(graph: &ObjectGraph, quiet: bool) -> RetainedAnalysis {
 
     let max_depth = depth.iter().copied().max().unwrap_or(0);
 
+    // Build one bucket per depth so the accumulation loop below is O(n) total,
+    // not O(n × max_depth).
+    let max_depth_usize = max_depth as usize;
+    let mut depth_buckets: Vec<Vec<usize>> = vec![Vec::new(); max_depth_usize + 1];
+    for v in 0..n {
+        depth_buckets[depth[v] as usize].push(v);
+    }
+
     let mut retained = vec![0u64; n];
-    for d in (0..=max_depth).rev() {
-        let nodes_at_depth: Vec<usize> = (0..n).filter(|&v| depth[v] == d).collect();
+    for d in (0..=max_depth_usize).rev() {
+        let nodes_at_depth = &depth_buckets[d];
         let updates: Vec<(usize, u64)> = nodes_at_depth
             .par_iter()
             .map(|&v| {
@@ -461,5 +467,34 @@ mod tests {
             .top_retainers
             .iter()
             .any(|r| r.retainer_class == "GC root" || r.retainer_class.contains("Node")));
+    }
+
+    #[test]
+    fn retained_accumulation_on_deep_chain_is_correct() {
+        // 10_000-node straight chain: node 0 -> 1 -> ... -> 9999
+        let n = 10_000usize;
+        let mut offsets = vec![0u32; n + 1];
+        let mut targets = vec![0u32; n - 1];
+        for i in 0..n - 1 {
+            offsets[i] = i as u32;
+            targets[i] = (i + 1) as u32;
+        }
+        offsets[n - 1] = (n - 1) as u32;
+        offsets[n] = (n - 1) as u32;
+        let graph = crate::graph::ObjectGraph {
+            addrs: (0..n as u64).collect(),
+            shallow: vec![8u32; n],
+            class_names: vec!["Node".into()],
+            object_class: vec![0u32; n],
+            offsets,
+            targets,
+            roots: vec![0],
+            num_nodes: n,
+            super_root: n as u32,
+        };
+        let analysis = compute_retained(&graph, true);
+        // Node 0 retains the whole chain: n * 8 bytes.
+        let root = analysis.top_objects.iter().find(|o| o.addr == 0).unwrap();
+        assert_eq!(root.retained_bytes, (n as u64) * 8);
     }
 }
