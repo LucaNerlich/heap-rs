@@ -13,6 +13,20 @@
 
 use crate::graph::ObjectGraph;
 
+/// Return the children (outgoing edges) of a node.
+///
+/// For the super-root, returns the GC roots. For regular nodes, returns their
+/// outgoing edges via the CSR representation.
+fn node_children(v: u32, graph: &ObjectGraph) -> &[u32] {
+    if v == graph.super_root {
+        &graph.roots
+    } else {
+        let start = graph.offsets[v as usize] as usize;
+        let end = graph.offsets[v as usize + 1] as usize;
+        &graph.targets[start..end]
+    }
+}
+
 /// Compute the immediate dominator of every node using Lengauer–Tarjan.
 ///
 /// The graph's synthetic [`super_root`](ObjectGraph::super_root) is used as the
@@ -62,13 +76,7 @@ pub fn compute_dominators(graph: &ObjectGraph) -> Vec<u32> {
     vertex[1] = graph.super_root;
 
     while let Some((v, child_idx)) = stack.pop() {
-        let children = if v == graph.super_root {
-            graph.roots.clone()
-        } else {
-            let start = graph.offsets[v as usize] as usize;
-            let end = graph.offsets[v as usize + 1] as usize;
-            graph.targets[start..end].to_vec()
-        };
+        let children = node_children(v, graph);
 
         if child_idx < children.len() {
             stack.push((v, child_idx + 1));
